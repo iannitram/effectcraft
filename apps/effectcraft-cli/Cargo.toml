@@ -24,3 +24,5 @@ serde_json = { workspace = true }
 image = { workspace = true }
 cpu-time = "1"
 craft-log = { path = "../../crates/craft-log" } # ours (self-logging)
+wgpu = { workspace = true } # ours (self-logging: `diagnostics` lists the graphics adapters)
+pollster = { workspace = true } # ours (self-logging)

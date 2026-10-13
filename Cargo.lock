@@ -1224,7 +1224,9 @@ dependencies = [
  "effectcraft-time",
  "effectcraft-ui-egui",
  "image",
+ "pollster 0.4.0",
  "serde_json",
+ "wgpu",
 ]
 
 [[package]]

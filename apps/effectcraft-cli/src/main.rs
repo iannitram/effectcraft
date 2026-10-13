@@ -121,6 +121,7 @@ const USAGE: &str = "usage: effectcraft-cli <info|commands|exec|run|props|get|se
       [--automation-read-root DIR] [--automation-write-root DIR]
                                            confine the agent's file access: reads under a read or write root,
                                            writes under a write root (each repeatable); scripts are refused
+  diagnostics [--json]                     this system, build, graphics, folders and where the logs are (ours)
 options: --project F.ecproj | --demo | --empty   --save | --save-as F   --bridge PORT   --json   --gpu
 <comp>: id or name, '-' = active comp; <layer>: id, '#n' or name; <value>: JSON or bare string";
 
@@ -633,6 +634,7 @@ fn run(cmd: &str, args: &Args, json_out: bool) -> Result<(), Failure> {
                 _ => {}
             }
         }
+        "diagnostics" => say!("{}", self_logging::diagnostics(json_out).trim_end()), // ours
         other => return usage_err(&format!("unknown subcommand `{other}`")),
     }
     Ok(())
