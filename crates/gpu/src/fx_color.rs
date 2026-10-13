@@ -110,9 +110,9 @@ fn point(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
             if !smooth {
                 return None;
             }
-            // UNTESTED, NOT EVEN COMPILED (written 2026-10-13 with no GPU available): the shader
-            // draws the hue wheel only, so every other output cycle (the built-in ramps, a custom
-            // palette) runs on the CPU, which has the cycles and keeps white at the cycle's end.
+            // The shader draws the hue wheel only, so every other output cycle (the built-in
+            // ramps, a custom palette) runs on the CPU, which has the cycles and keeps white at
+            // the cycle's end (`colorama_ramp_and_custom_cycles_match_the_cpu`).
             if pr.e("outputCycle/usePresetPalette") != 0 {
                 return None;
             }
