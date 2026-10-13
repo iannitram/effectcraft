@@ -771,6 +771,33 @@ fn cc_composite_restores_stack_input_on_layers_and_adjustments() {
     }
 }
 
+/// An adjustment layer's blending mode counts: the adjusted picture goes over the comp below
+/// with that mode (a Soft Light or Multiply adjustment layer is a common grade), it is not
+/// simply mixed in.
+#[test]
+fn an_adjustment_layer_blends_with_its_mode() {
+    let frame = |mode: BlendMode, opacity: f64| {
+        let (mut p, cid, comp) = setup();
+        let mut adj = solid(&mut p, &comp, [1.0, 1.0, 1.0], 200, 100);
+        adj.switches.adjustment = true;
+        adj.blend_mode = mode;
+        adj.props.prop_mut("transform/opacity").unwrap().value = Value::Scalar(opacity);
+        add_effect_200(&mut p, &mut adj, "ec.channel.invert", &[]);
+        let bg = solid(&mut p, &comp, [0.25, 0.25, 0.25], 200, 100);
+        let c = p.comp_mut(cid).unwrap();
+        c.layers.push(adj);
+        c.layers.push(bg);
+        render_frame(&p, cid, Tick::ZERO, 1.0).get(50, 50)
+    };
+    let near = |got: [f32; 4], want: f32| (got[0] - want).abs() < 1e-3 && (got[2] - want).abs() < 1e-3 && (got[3] - 1.0).abs() < 1e-4;
+    // The comp below is 0.25 grey; inverted it is 0.75.
+    assert!(near(frame(BlendMode::Normal, 100.0), 0.75), "normal: {:?}", frame(BlendMode::Normal, 100.0));
+    assert!(near(frame(BlendMode::Normal, 50.0), 0.5), "normal at 50%: {:?}", frame(BlendMode::Normal, 50.0));
+    assert!(near(frame(BlendMode::Multiply, 100.0), 0.1875), "multiply: {:?}", frame(BlendMode::Multiply, 100.0));
+    assert!(near(frame(BlendMode::Screen, 100.0), 0.8125), "screen: {:?}", frame(BlendMode::Screen, 100.0));
+    assert!(near(frame(BlendMode::Multiply, 50.0), 0.21875), "multiply at 50%: {:?}", frame(BlendMode::Multiply, 50.0));
+}
+
 #[test]
 fn self_inputs_share_source_semantics_across_effects_and_times() {
     use crate::{EffectHost, FxHost, NoFootage, RenderOpts, Renderer};

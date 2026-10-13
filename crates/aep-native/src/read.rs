@@ -117,9 +117,10 @@ pub struct RawLayer {
     /// In and out points in layer time (before the stretch).
     pub in_point: Rational,
     pub out_point: Rational,
-    /// Time stretch as a whole factor (1 = 100%, -1 = reversed). Its divisor has not been
-    /// found in the file, so fractional stretches read as whole factors.
-    pub stretch: i16,
+    /// Time stretch as a fraction, numerator and denominator (1/1 = 100%, 7/10 = 70%, 3/4 =
+    /// 75%, -1/1 = reversed). Measured: with the fraction, a stretched layer ends on the
+    /// frame the next layer of the same cut starts on.
+    pub stretch: (i32, u32),
     pub label: u8,
     pub blend: u32,
     pub matte: u32,
@@ -392,9 +393,10 @@ fn legacy_alias_path(d: &[u8]) -> Option<String> {
 
 fn read_layer(layr: &Chunk) -> RawLayer {
     let d = layr.first(b"ldta").map(|c| c.data).unwrap_or(&[]);
-    // ldta: layer id u32 @0, quality u16 @4, stretch i16 @10, start @12, in @20 and out @28 as
-    // (value, scale) pairs, three flag bytes @37, source item id u32 @40, label u8 @61, blend
-    // mode u32 @96, track matte u32 @104, layer type u32 @128, parent layer id u32 @132.
+    // ldta: layer id u32 @0, quality u16 @4, the stretch's numerator i32 @8, start @12, in @20
+    // and out @28 as (value, scale) pairs, three flag bytes @37, source item id u32 @40, label
+    // u8 @61, blend mode u32 @96, track matte u32 @104, the stretch's denominator u32 @108,
+    // layer type u32 @128, parent layer id u32 @132.
     let (f0, f1, f2) = (u8_at(d, 37), u8_at(d, 38), u8_at(d, 39));
     let bit = |b: u8, n: u8| b >> n & 1 == 1;
     RawLayer {
@@ -412,7 +414,7 @@ fn read_layer(layr: &Chunk) -> RawLayer {
         start: Rational::at(d, 12),
         in_point: Rational::at(d, 20),
         out_point: Rational::at(d, 28),
-        stretch: i16_at(d, 10),
+        stretch: (i32_at(d, 8), u32_at(d, 108)),
         label: u8_at(d, 61),
         blend: u32_at(d, 96),
         matte: u32_at(d, 104),
