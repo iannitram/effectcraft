@@ -30,6 +30,7 @@ pub(crate) fn render<'g>(e: &mut Enc<'g>, r: &Renderer, comp_id: ItemId, t: Tick
     let w = ((ctx.comp.width as f64 * s).round() as u32).max(1);
     let h = ((ctx.comp.height as f64 * s).round() as u32).max(1);
     if r.depth() > 16 || !e.g.fits(w, h) {
+        crate::self_logging::frame(r.depth(), w, h, e.g.max_dim); // ours
         return None;
     }
     let mut canvas = e.zeros(w, h);
@@ -122,7 +123,10 @@ fn draw_3d<'a>(e: &mut Enc, r: &Renderer<'a>, ctx: &EvalCtx<'a>, run: &[&'a Laye
     if let Some(prep) = r.prepare_adv_run(ctx, run, (canvas.width, canvas.height)) {
         match crate::adv3d::draw_run(e, &prep, canvas) {
             Some(img) => *canvas = img,
-            None => on_cpu(e, canvas, |img| r.draw_3d_run(ctx, run, img))?,
+            None => {
+                crate::self_logging::run_3d("Advanced 3D: the GPU renderer declined the run", run, canvas.width, canvas.height); // ours
+                on_cpu(e, canvas, |img| r.draw_3d_run(ctx, run, img))?
+            }
         }
         return Some(());
     }
@@ -131,13 +135,19 @@ fn draw_3d<'a>(e: &mut Enc, r: &Renderer<'a>, ctx: &EvalCtx<'a>, run: &[&'a Laye
     if let Some(split) = r.split_adv_run(ctx, run, (canvas.width, canvas.height)) {
         match draw_split(e, r, ctx, &split, canvas) {
             Some(img) => *canvas = img,
-            None => on_cpu(e, canvas, |img| r.draw_3d_run(ctx, run, img))?,
+            None => {
+                crate::self_logging::run_3d("Advanced 3D with 2D-composited layers: the GPU split path declined the run", run, canvas.width, canvas.height); // ours
+                on_cpu(e, canvas, |img| r.draw_3d_run(ctx, run, img))?
+            }
         }
         return Some(());
     }
     match r.prepare_3d_run(ctx, run, (canvas.width, canvas.height)).and_then(|prep| crate::classic3d::draw_run(e, &prep, canvas)) {
         Some(img) => *canvas = img,
-        None => on_cpu(e, canvas, |img| r.draw_3d_run(ctx, run, img))?,
+        None => {
+            crate::self_logging::run_3d("Classic 3D: the run cannot be prepared for the GPU kernel, or the kernel declined it", run, canvas.width, canvas.height); // ours
+            on_cpu(e, canvas, |img| r.draw_3d_run(ctx, run, img))?
+        }
     }
     Some(())
 }
@@ -203,6 +213,7 @@ fn draw_layer(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &
         if draw_adjustment(e, r, ctx, layer, canvas).is_some() {
             return Some(());
         }
+        crate::self_logging::adjustment(layer); // ours
         return on_cpu(e, canvas, |img| r.draw_layer_cpu(ctx, layer, img));
     }
     if r.quality(layer) == Quality::Wireframe {
@@ -255,13 +266,18 @@ fn draw_layer(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &
 /// `Some(None)`: the GPU failed.
 fn draw_precomp(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &mut GpuImage, opacity: f32) -> Option<Option<()>> {
     if layer.masks().is_some_and(|m| !m.children.is_empty()) || styles::active(ctx, layer) {
+        crate::self_logging::precomp(layer, "the precomp layer has masks or layer styles"); // ours
         return None;
     }
-    let (sub, item, lt, bs) = r.precomp_source(ctx, layer)?;
+    let Some((sub, item, lt, bs)) = r.precomp_source(ctx, layer) else {
+        crate::self_logging::precomp(layer, "it needs the CPU path (a cycle, content times, a proxy, essential overrides, frame blending, or a time outside the nested comp)"); // ours
+        return None;
+    };
     // A nested comp the GPU can't take (nested too deep, over the texture limit, content it
     // declines) goes back to the CPU path for this layer only; only a device failure fails the
     // frame.
     let Some(mut src) = render(e, &sub, item, lt) else {
+        crate::self_logging::precomp(layer, "the GPU could not render the nested comp (the line before says why, when it is the size or the depth)"); // ours
         return if e.g.check_health().is_ok() { None } else { Some(None) };
     };
     let pipe = r.pipe();

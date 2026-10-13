@@ -82,6 +82,7 @@ mod fx_warp;
 mod ops;
 mod particles;
 mod readback;
+mod self_logging; // ours
 mod walk;
 
 use std::sync::Arc;
