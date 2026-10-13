@@ -129,7 +129,7 @@ fn fit(size: [f32; 2], room: [f32; 2]) -> [f32; 2] {
 /// geometry.
 pub fn restore(window: &winit::window::Window, saved: Option<WindowGeometry>) -> WindowGeometry {
     let handles: Vec<_> = window.available_monitors().collect();
-    let monitors: Vec<Monitor> = handles.iter().map(|m| Monitor::new(m.position(), m.size(), m.scale_factor())).collect();
+    let monitors: Vec<Monitor> = handles.iter().map(|m| Monitor::new(m.position(), crate::wayland_screen::size(m), m.scale_factor())).collect(); // ours
     let home = window.current_monitor().or_else(|| window.primary_monitor()).and_then(|c| handles.iter().position(|m| *m == c));
     let g = place(saved, &monitors, home);
     if let Some([x, y]) = g.pos {
