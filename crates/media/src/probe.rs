@@ -240,17 +240,10 @@ pub(crate) fn load_oriented(bytes: &[u8], fmt: Option<image::ImageFormat>) -> im
 /// says so in its video track's header): the quarter turn nearest the track's rotation. Only the
 /// rotation counts; any mirroring, scaling or offset in the header is ignored, and other
 /// containers have none.
-pub(crate) fn video_turn(bytes: &[u8]) -> Orientation {
-    let Ok(file) = filmcraft_isobmff::open(bytes) else { return Orientation::NoTransforms };
-    let Some(m) = file.tracks.iter().find(|t| t.kind == filmcraft_isobmff::TrackKind::Video).map(|t| t.matrix) else {
-        return Orientation::NoTransforms;
-    };
-    // [a b u; c d v; x y w]: (a, b) is where the picture's x axis points.
-    let (a, b) = (m[0] as i64, m[1] as i64);
-    match (a.abs() >= b.abs(), a >= 0, b >= 0) {
-        (true, true, _) => Orientation::NoTransforms,
-        (true, false, _) => Orientation::Rotate180,
-        (false, _, true) => Orientation::Rotate90,
-        (false, _, false) => Orientation::Rotate270,
-    }
+pub(crate) fn video_turn(_bytes: &[u8]) -> Orientation {
+    // FilmCraft's MP4 / MOV reader has applied the track's display matrix itself since the
+    // revision that brought its AVI reader: it reports the turned size and returns turned
+    // frames. Turning again here showed a portrait movie on its side, so nothing is left to do.
+    // The callers keep asking, in case a container FilmCraft does not turn needs it again.
+    Orientation::NoTransforms
 }
