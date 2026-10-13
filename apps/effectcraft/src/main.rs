@@ -49,7 +49,7 @@ fn is_project_file(path: &str) -> bool {
     std::path::Path::new(path)
         .extension()
         .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("ecproj") || ext.eq_ignore_ascii_case("ecprojx"))
+        .is_some_and(|ext| ["ecproj", "ecprojx", "aep", "aet"].iter().any(|p| ext.eq_ignore_ascii_case(p)))
 }
 
 /// winit 0.30 cannot deliver native Wayland file drops. XWayland can.
@@ -242,7 +242,11 @@ fn main() -> eframe::Result {
                 }));
             }
             app.hooks.pick_open_project = Some(Box::new(|| {
-                rfd::FileDialog::new().add_filter("EffectCraft Project", &["ecproj", "ecprojx"]).pick_file().map(|p| p.to_string_lossy().to_string())
+                rfd::FileDialog::new()
+                    .add_filter("Projects", &["ecproj", "ecprojx", "aep", "aet"])
+                    .add_filter("EffectCraft Project", &["ecproj", "ecprojx"])
+                    .add_filter("After Effects Project", &["aep", "aet"])
+                    .pick_file().map(|p| p.to_string_lossy().to_string())
             }));
             app.hooks.system_theme = appearance::service();
             app.hooks.audio_device = Some(Box::new(audio_out::open));

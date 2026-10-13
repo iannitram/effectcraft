@@ -48,7 +48,11 @@ fn open(dialog: FileDialog) -> Answer {
             }
         }
         FileDialog::OpenProject => {
-            let f = AsyncFileDialog::new().add_filter("EffectCraft Project", &["ecproj", "ecprojx"]).pick_file();
+            let f = AsyncFileDialog::new()
+                .add_filter("Projects", &["ecproj", "ecprojx", "aep", "aet"])
+                .add_filter("EffectCraft Project", &["ecproj", "ecprojx"])
+                .add_filter("After Effects Project", &["aep", "aet"])
+                .pick_file();
             Box::pin(async move { path(f.await) })
         }
         FileDialog::Folder => {

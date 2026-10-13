@@ -1,0 +1,18 @@
+[package]
+name = "effectcraft-aep-native"
+description = "After Effects project (.aep) reader in Rust, no external converter: folders, compositions, solids, footage links, layers with timing, switches, blend modes, parenting and track mattes, transform keyframes and masks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+effectcraft-time = { workspace = true }
+effectcraft-color = { workspace = true }
+effectcraft-keyframe = { workspace = true }
+effectcraft-project = { workspace = true }
+effectcraft-effects = { workspace = true }
+thiserror = { workspace = true }
