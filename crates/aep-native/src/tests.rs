@@ -383,7 +383,11 @@ fn masks_and_effects() {
     assert_eq!(path.out_tangents[0], [80.0, 0.0]);
     assert_eq!(path.in_tangents[1], [-80.0, 0.0]);
     assert_eq!(path.in_tangents[0], [80.0, 180.0]);
-    assert_eq!(m.get("feather").unwrap().value, Value::Vec2([12.0, 12.0]));
+    // A feather of 12 in the file: scaled on the way in (EffectCraft's feather is the wider
+    // one for the same number), and the import list says so.
+    let Value::Vec2(feather) = m.get("feather").unwrap().value else { panic!("feather is not a pair") };
+    assert!((feather[0] - 9.12).abs() < 1e-9 && (feather[1] - 9.12).abs() < 1e-9, "{feather:?}");
+    assert!(r.warnings.iter().any(|w| w.starts_with("mask feather scaled to 76%")), "{:?}", r.warnings);
     assert_eq!(m.get("opacity").unwrap().value, Value::Scalar(50.0));
     // A known effect with nothing changed arrives switched on (settings: `tests_settings.rs`);
     // an unknown one is skipped and reported.
