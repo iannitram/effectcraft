@@ -35,6 +35,7 @@ mod layer_time;
 pub(crate) mod link;
 mod liquify;
 mod lottie;
+pub(crate) mod aep;
 pub mod markers;
 mod mask;
 pub mod mask_interp;
@@ -193,6 +194,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(file_more::specs());
         v.extend(relink::specs());
         v.extend(lottie::specs());
+        v.extend(aep::specs());
         v.extend(timeline::specs());
         v.extend(comp_more::specs());
         v.extend(frame_export::specs());

@@ -40,6 +40,10 @@ fn demo(s: &mut Session, _: &Value) -> Result<Value> {
 pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_p(p, "path").ok_or_else(|| bad("file.open", "missing `path`"))?;
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("cannot read {path}: {e}")))?;
+    // An After Effects project is imported into a new untitled project (`effectcraft-aep`).
+    if effectcraft_aep::is_aep(&bytes) {
+        return super::aep::open(s, path, &bytes);
+    }
     let text = String::from_utf8(bytes).map_err(|_| EngineError::Other("not a text project file".into()))?;
     // XML copies (File ▸ Save a Copy As XML…) open like the JSON project.
     let text = if crate::xml_project::is_xml(&text) { crate::xml_project::from_xml(&text).map_err(EngineError::Other)? } else { text };
