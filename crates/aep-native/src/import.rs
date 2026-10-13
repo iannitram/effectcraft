@@ -615,6 +615,73 @@ fn effects(cx: &mut Ctx, ids: &mut Ids, raw: &[RawNode], g: &mut PropGroup, size
     }
 }
 
+/// CC Spotlight's From and To on a text layer.
+///
+/// Measured on five title projects against the published episodes that carry them: the same
+/// two keyframed points light the same part of the picture in every episode, wherever the
+/// title's text layer sits (centred at 958, right-aligned at 1565), so in After Effects the
+/// numbers are places in the composition. EffectCraft draws them in the text layer's own
+/// frame: a point `p` lands at `position + scale × (p − half)`, `half` being half the layer's
+/// nominal size (found by toggling: a title at 1565 showed its light 680 pixels to the right
+/// of the episode's, which is what that sum gives). So each point is rewritten as
+/// `half + (P − position) / scale`, at its own keyframes, with position and scale taken at
+/// that time; between keyframes it runs straight, which is close while scale changes slowly.
+/// A point without keyframes on a layer whose position or scale is keyed gets keyframes at
+/// theirs. The layer's depth (a 3D layer in front of or behind the picture plane) is not
+/// allowed for. Only CC Spotlight was measured; other effects' points are left alone.
+///
+/// `None`: no CC Spotlight here. `Some(false)`: the layer is rotated or has an anchor point,
+/// which was not measured, and the points were left as they are.
+fn spotlight_points(l: &mut Layer, half: [f64; 2]) -> Option<bool> {
+    let tr = l.props.sub("transform")?;
+    let (pos, scale) = (tr.get("position")?.clone(), tr.get("scale")?.clone());
+    let at_rest = |id: &str| tr.get(id).is_none_or(|p| p.keys.is_empty() && p.value.as_vec3().iter().all(|c| c.abs() < 1e-9));
+    let plain = ["anchor", "rotation", "rotationX", "rotationY"].into_iter().all(at_rest);
+    let moved = |v: &Value, t: Tick| -> Option<([f64; 2], [f64; 2])> {
+        let (p, ps, sc) = (v.as_vec2(), pos.value_at(t).as_vec2(), scale.value_at(t).as_vec2());
+        let s = [sc[0] / 100.0, sc[1] / 100.0];
+        (s[0].abs() > 1e-6 && s[1].abs() > 1e-6).then(|| ([half[0] + (p[0] - ps[0]) / s[0], half[1] + (p[1] - ps[1]) / s[1]], s))
+    };
+    let mut times: Vec<Tick> = pos.keys.iter().chain(&scale.keys).map(|k| k.time).collect();
+    times.sort();
+    times.dedup();
+    let mut found = None;
+    for node in &mut l.props.sub_mut("effects")?.children {
+        let Node::Group(g) = node else { continue };
+        if g.match_id != "ec.perspective.ccspotlight" {
+            continue;
+        }
+        found = Some(plain);
+        if !plain {
+            continue;
+        }
+        for id in ["from", "to"] {
+            let Some(p) = g.get_mut(id) else { continue };
+            if p.keys.is_empty() && !times.is_empty() {
+                let fixed = p.value.clone();
+                p.keys = times.iter().filter_map(|t| moved(&fixed, *t).map(|(v, _)| Keyframe::new(*t, Value::Vec2(v)))).collect();
+            } else {
+                for k in &mut p.keys {
+                    if let Some((v, s)) = moved(&k.value, k.time) {
+                        k.value = Value::Vec2(v);
+                        k.spatial_in = [k.spatial_in[0] / s[0], k.spatial_in[1] / s[1], k.spatial_in[2]];
+                        k.spatial_out = [k.spatial_out[0] / s[0], k.spatial_out[1] / s[1], k.spatial_out[2]];
+                    }
+                }
+            }
+            match p.keys.first() {
+                Some(first) => p.value = first.value.clone(),
+                None => {
+                    if let Some((v, _)) = moved(&p.value, Tick::ZERO) {
+                        p.value = Value::Vec2(v);
+                    }
+                }
+            }
+        }
+    }
+    found
+}
+
 fn build_layers(cx: &mut Ctx, project: &mut Project, comp: &mut Comp, raw: &RawComp, comp_id: ItemId) {
     let mut by_id: BTreeMap<u32, LayerId> = BTreeMap::new();
     // (our layer, After Effects parent id, matte mode, the layer above).
@@ -761,6 +828,13 @@ fn build_layers(cx: &mut Ctx, project: &mut Project, comp: &mut Comp, raw: &RawC
                 ("ADBE Layer Styles", RawKind::Group(_)) | ("ADBE Transform Group", _) => {}
                 ("ADBE Marker", RawKind::Prop(p)) if !p.keys.is_empty() => cx.warn.add("layer markers not imported"),
                 _ => {}
+            }
+        }
+        if matches!(l.source, LayerSource::Text) {
+            match spotlight_points(&mut l, [size.0 as f64 / 2.0, size.1 as f64 / 2.0]) {
+                Some(true) => cx.warn.add("effect CC Spotlight: its From and To are places in the composition in After Effects; they were moved into the text layer's own frame, straight between their keyframes"),
+                Some(false) => cx.warn.add("effect CC Spotlight: its From and To are places in the composition in After Effects; on this rotated or re-anchored text layer they were left as they are: check them"),
+                None => {}
             }
         }
         for _ in 0..expressions(&rl.props, 0) {

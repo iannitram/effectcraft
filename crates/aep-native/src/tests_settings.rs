@@ -506,6 +506,43 @@ fn cc_spotlight_cone_angle_and_light_shadow_intensity() {
     assert!(!said(&r, "Intensity"), "{:?}", r.warnings);
 }
 
+/// CC Spotlight on a text layer: After Effects' From and To are places in the composition, ours
+/// are in the layer's own frame, so they are rewritten as `half + (P − position) / scale`. On
+/// a rotated layer, which was not measured, they are left alone and the import list says so.
+#[test]
+fn cc_spotlight_points_on_a_text_layer_move_into_its_frame() {
+    let defs = vec![def("CC Spotlight-0000", 0, "", |_| {}), point("CC Spotlight-0001", "From", [30.0, 20.0]), point("CC Spotlight-0002", "To", [50.0, 50.0])];
+    // From at a quarter and a half of the 1920×1080 composition, (480, 540); To at its default, the middle.
+    let spot = effect("CC Spotlight", &defs, 1, &stored("CC Spotlight-0001", 2, &[0.25, 0.5]));
+    let blob = crate::text::tests::document("Title\r", &[(6, 0, 96.0, [1.0, 1.0, 1.0, 1.0])]);
+    let btdk = chunk(b"LIST", &[b"btdk".as_slice(), blob.as_slice()].concat());
+    let text = group(&[tdmn("ADBE Text Document"), list(b"btds", &[list(b"tdbs", &[tdb4(1, false)]), btdk])]);
+    let title = |transform: Vec<Vec<u8>>| {
+        let props = group(&[
+            tdmn("ADBE Text Properties"),
+            text.clone(),
+            tdmn("ADBE Transform Group"),
+            group(&transform),
+            tdmn("ADBE Effect Parade"),
+            group(&[tdmn("CC Spotlight"), spot.clone()]),
+        ]);
+        let layer = list(b"Layr", &[ldta(&L { id: 1, ty: 3, flags: [0, 0, 0x87], ..Default::default() }), chunk(b"Utf8", b"Title"), props]);
+        run(&file(&[list(b"Fold", &[list(b"Item", &[idta(4, 30), chunk(b"Utf8", b"Comp"), cdta(1920, 1080, 30), layer])])]))
+    };
+    let placed = vec![tdmn("ADBE Position"), fixed(3, &[1500.0, 400.0, 0.0]), tdmn("ADBE Scale"), fixed(3, &[0.5, 0.5, 0.5])];
+    let (p, r) = title(placed.clone());
+    let g = effect_of(&p, &r, 0, 0);
+    assert!(g.enabled, "{:?}", r.warnings);
+    // 960 + (480 − 1500) / 0.5 and 540 + (540 − 400) / 0.5; To the same from (960, 540).
+    assert_eq!(g.prop("from").unwrap().value, Value::Vec2([-1080.0, 820.0]));
+    assert_eq!(g.prop("to").unwrap().value, Value::Vec2([-120.0, 820.0]));
+    assert!(r.warnings.iter().any(|w| w.contains("moved into the text layer's own frame")), "{:?}", r.warnings);
+    let turned = [placed, vec![tdmn("ADBE Rotate Z"), fixed(1, &[10.0])]].concat();
+    let (p, r) = title(turned);
+    assert_eq!(effect_of(&p, &r, 0, 0).prop("from").unwrap().value, Value::Vec2([480.0, 540.0]));
+    assert!(r.warnings.iter().any(|w| w.contains("left as they are")), "{:?}", r.warnings);
+}
+
 /// Fast Blur has no twin here: Gaussian Blur stands in with the same Blurriness, and the
 /// import list says so.
 #[test]
