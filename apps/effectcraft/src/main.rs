@@ -21,6 +21,7 @@ mod control_server;
 mod launch_guard;
 #[cfg(target_os = "macos")]
 mod native_menu;
+mod self_logging; // ours
 // Built everywhere so it stays checked; only the macOS app uses it.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod sheet_dialogs;
@@ -92,8 +93,9 @@ fn main() -> eframe::Result {
     // First, so the panic hook and every start-up warning are recorded. Records go to stderr
     // and the session log; Help ▸ Enable Logging writes through this logger too, and warnings
     // feed the compatibility report.
-    effectcraft_engine::logging::install();
+    self_logging::install(); // ours: upstream's logging::install, wrapped
     effectcraft_engine::logging::install_panic_hook();
+    self_logging::crash_hook(); // ours
     let Some(Args { control_port, files, demo, home }) = parse_args(std::env::args().skip(1), std::env::var("EFFECTCRAFT_CONTROL_PORT").ok()) else {
         println!("effectcraft {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
@@ -115,6 +117,7 @@ fn main() -> eframe::Result {
     // Settings ▸ Startup & Repair ▸ Window Graphics, switched to OpenGL when the last launch
     // stopped as its window opened (a crashing graphics driver, #243).
     let mut launch = launch_guard::Launch::begin(effectcraft_host::config_dir().as_deref(), std::env::var_os("WGPU_BACKEND").is_some());
+    self_logging::start(launch.backends); // ours
     let on_gl = launch.backends == Some(eframe::wgpu::Backends::GL);
     let notice = launch.notice.take();
     let options = eframe::NativeOptions {
