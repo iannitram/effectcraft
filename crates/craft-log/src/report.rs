@@ -456,7 +456,7 @@ mod tests {
         assert_eq!(mask_with("/home/deck/dev/x and /home/deck", home), "~/dev/x and ~");
         assert_eq!(mask_with("/home/deckard/x", home), "/home/deckard/x");
         assert_eq!(mask_with("FILMCRAFT_DATA_DIR=/home/deck/a:/home/deck/b", home), "FILMCRAFT_DATA_DIR=~/a:~/b");
-        assert_eq!(mask_with("C:\\Users\\ian\\AppData", Some("C:\\Users\\ian\\")), "~\\AppData");
+        assert_eq!(mask_with("C:\\Users\\sam\\AppData", Some("C:\\Users\\sam\\")), "~\\AppData");
         assert_eq!(mask_with("/x", None), "/x");
         assert_eq!(mask_with("/x", Some("/")), "/x", "a root home masks nothing");
     }
@@ -540,15 +540,15 @@ mod tests {
     fn the_home_folder_comes_from_the_platforms_own_variables() {
         let env = |pairs: &'static [(&'static str, &'static str)]| move |k: &str| pairs.iter().find(|(a, _)| *a == k).map(|(_, v)| (*v).to_owned());
         // Windows does not set HOME: USERPROFILE, HOMEDRIVE + HOMEPATH, in both slash styles
-        let win = env(&[("USERPROFILE", "C:\\Users\\ian"), ("HOMEDRIVE", "D:"), ("HOMEPATH", "\\Users\\ian")]);
+        let win = env(&[("USERPROFILE", "C:\\Users\\sam"), ("HOMEDRIVE", "D:"), ("HOMEPATH", "\\Users\\sam")]);
         let homes = home_folders(&win, true);
-        assert_eq!(homes, ["C:\\Users\\ian", "C:/Users/ian", "D:\\Users\\ian", "D:/Users/ian"]);
+        assert_eq!(homes, ["C:\\Users\\sam", "C:/Users/sam", "D:\\Users\\sam", "D:/Users/sam"]);
         assert_eq!(
-            mask_homes("C:\\Users\\ian\\AppData c:\\users\\IAN\\x C:/Users/ian/y D:\\Users\\ian. C:\\Users\\iana", &homes, true),
-            "~\\AppData ~\\x ~/y ~. C:\\Users\\iana"
+            mask_homes("C:\\Users\\sam\\AppData c:\\users\\SAM\\x C:/Users/sam/y D:\\Users\\sam. C:\\Users\\sama", &homes, true),
+            "~\\AppData ~\\x ~/y ~. C:\\Users\\sama"
         );
         // Git Bash's HOME is masked too
-        assert!(home_folders(&env(&[("USERPROFILE", "C:\\Users\\ian"), ("HOME", "/c/Users/ian")]), true).contains(&"/c/Users/ian".to_owned()));
+        assert!(home_folders(&env(&[("USERPROFILE", "C:\\Users\\sam"), ("HOME", "/c/Users/sam")]), true).contains(&"/c/Users/sam".to_owned()));
         // Unix: HOME only
         assert_eq!(home_folders(&env(&[("HOME", "/home/deck/"), ("USERPROFILE", "x:\\y")]), false), ["/home/deck"]);
         assert!(home_folders(&env(&[("HOME", "/")]), false).is_empty());
