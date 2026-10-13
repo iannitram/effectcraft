@@ -617,13 +617,14 @@ fn effects(cx: &mut Ctx, ids: &mut Ids, raw: &[RawNode], g: &mut PropGroup, size
 
 /// CC Spotlight's From and To on a text layer.
 ///
-/// Measured on five title projects against the published episodes that carry them: the same
-/// two keyframed points light the same part of the picture in every episode, wherever the
-/// title's text layer sits (centred at 958, right-aligned at 1565), so in After Effects the
-/// numbers are places in the composition. EffectCraft draws them in the text layer's own
-/// frame: a point `p` lands at `position + scale × (p − half)`, `half` being half the layer's
-/// nominal size (found by toggling: a title at 1565 showed its light 680 pixels to the right
-/// of the episode's, which is what that sum gives). So each point is rewritten as
+/// Seen on two title projects that share the same two keyframed points, each compared with
+/// the published episode that carries it: the points light the same part of the picture in
+/// both, though one title's text layer sits centred (at 958) and the other right-aligned (at
+/// 1565). So in After Effects the numbers are places in the composition. EffectCraft draws
+/// them in the text layer's own frame: a point `p` lands at `position + scale × (p − half)`,
+/// `half` being half the layer's nominal size (read off the pictures: the right-aligned title
+/// showed its light about 680 pixels to the right of the episode's, which is what that sum
+/// gives; not traced in the renderer's code). So each point is rewritten as
 /// `half + (P − position) / scale`, at its own keyframes, with position and scale taken at
 /// that time; between keyframes it runs straight, which is close while scale changes slowly.
 /// A point without keyframes on a layer whose position or scale is keyed gets keyframes at
