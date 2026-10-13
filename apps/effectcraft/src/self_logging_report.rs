@@ -16,6 +16,9 @@ pub const PREVIOUS_LOG_FILE: &str = "effectcraft.1.log";
 pub const CLI_LOG_FILE: &str = "effectcraft-cli.log";
 /// Environment switches EffectCraft reads besides craft-log's own: its own, wgpu's and winit's.
 pub const SWITCH_PREFIXES: &[&str] = &["EFFECTCRAFT_", "WGPU_", "WINIT_"];
+/// Switches whose values the report never shows: none today (no EFFECTCRAFT_, WGPU_ or WINIT_
+/// variable carries a secret; craft-log also hides any whose name says TOKEN, SECRET, PASSWORD…).
+pub const SECRET_SWITCHES: &[&str] = &[];
 /// Upstream's last line of a window run that ended normally (`main.rs`); the next start looks for it.
 pub const END_MARK: &str = "the window closed";
 /// How much of the end of the previous log is searched for [`END_MARK`].

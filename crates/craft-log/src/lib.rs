@@ -35,6 +35,9 @@ pub mod stall;
 pub mod testing;
 pub mod wrap;
 
+#[cfg(test)]
+mod build_tree;
+
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
@@ -42,6 +45,9 @@ pub use collapse::recent;
 
 /// The commit the program was built from (first 8 hex digits), or "unknown".
 pub const BUILD_COMMIT: &str = env!("CRAFT_LOG_COMMIT");
+/// `+modified?` when the build looks made from uncommitted work (a source file newer than git's
+/// index when it was built; an approximation, hence the question mark), else empty.
+pub const BUILD_TREE: &str = env!("CRAFT_LOG_TREE");
 /// The date it was built (UTC, `YYYY-MM-DD`).
 pub const BUILD_DATE: &str = env!("CRAFT_LOG_BUILD_DATE");
 /// `release` or `debug`.
@@ -63,10 +69,11 @@ pub struct App {
 
 impl App {
     /// The first line of every log, crash file and report: which build wrote it.
-    /// `filmcraft 0.7.0 (commit a8657630, built 2026-10-13, release, linux x86_64)`
+    /// `filmcraft 0.7.0 (commit a8657630, built 2026-10-13, release, linux x86_64)`, with
+    /// `a8657630+modified?` for a build from uncommitted work ([`BUILD_TREE`]).
     pub fn build_line(&self) -> String {
         format!(
-            "{} {} (commit {BUILD_COMMIT}, built {BUILD_DATE}, {BUILD_PROFILE}, {} {})",
+            "{} {} (commit {BUILD_COMMIT}{BUILD_TREE}, built {BUILD_DATE}, {BUILD_PROFILE}, {} {})",
             self.name,
             self.version,
             std::env::consts::OS,
@@ -119,7 +126,8 @@ mod tests {
     fn the_build_line_names_the_build() {
         let app = App { name: "testapp", version: "1.2.3", ours: "testapp", default_filter: "warn,testapp=info" };
         let line = app.build_line();
-        assert!(line.starts_with("testapp 1.2.3 (commit "), "{line}");
+        assert!(line.starts_with(&format!("testapp 1.2.3 (commit {BUILD_COMMIT}{BUILD_TREE}, ")), "{line}");
+        assert!(BUILD_TREE.is_empty() || BUILD_TREE == "+modified?", "{BUILD_TREE}");
         assert!(line.contains(&format!("built {BUILD_DATE}, {BUILD_PROFILE}, ")), "{line}");
         assert!(BUILD_COMMIT == "unknown" || (BUILD_COMMIT.len() == 8 && BUILD_COMMIT.bytes().all(|b| b.is_ascii_hexdigit())));
         assert_eq!(BUILD_DATE.len(), 10);

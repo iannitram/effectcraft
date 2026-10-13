@@ -18,11 +18,15 @@ fn log_dir() -> std::path::PathBuf {
     effectcraft_engine::logging::log_dir(effectcraft_host::config_dir().as_deref())
 }
 
+/// Arguments whose values are never logged: none today (no effectcraft-cli argument carries a
+/// secret).
+const SECRET_ARGS: &[&str] = &[];
+
 /// Start this run's log and the crash file hook (after `--help` and `--version`, which leave no
 /// trace).
 pub fn install() {
     let dir = log_dir();
-    let _ = craft_log::cli::install(&APP, Some(&dir));
+    let _ = craft_log::cli::install(&APP, Some(&dir), SECRET_ARGS);
     craft_log::crash::install_hook(APP, dir);
 }
 
@@ -49,7 +53,7 @@ pub fn diagnostics(json: bool) -> String {
     graphics(&mut r);
     r.add("screens", "screens", "unknown (no window; the window app logs them at start)");
     report::folders(&mut r, settings.as_deref());
-    r.add_switches(report::SWITCH_PREFIXES);
+    r.add_switches(report::SWITCH_PREFIXES, report::SECRET_SWITCHES);
     r.add_helpers();
     // the window app's newest log is its last run (or the one running now)
     report::previous_run(&mut r, &logs, &logs.join(report::LOG_FILE));

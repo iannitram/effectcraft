@@ -52,7 +52,7 @@ impl Report {
         let mut r = Report::empty();
         r.add("app", "name", app.name);
         r.add("app", "version", app.version);
-        r.add("app", "commit", crate::BUILD_COMMIT);
+        r.add("app", "commit", format!("{}{}", crate::BUILD_COMMIT, crate::BUILD_TREE));
         r.add("app", "build profile", crate::BUILD_PROFILE);
         r.add("app", "built on", crate::BUILD_DATE);
         r.add("app", "runs from", std::env::current_exe().map(|p| mask_home(&p.display().to_string())).unwrap_or_default());
@@ -94,10 +94,12 @@ impl Report {
     }
 
     /// The switches in force: every environment variable starting with `CRAFT_`, `RUST_LOG`, and
-    /// those starting with one of the app's `prefixes` (`FILMCRAFT_`, `WGPU_`), values masked.
-    pub fn add_switches(&mut self, prefixes: &[&str]) {
+    /// those starting with one of the app's `prefixes` (`FILMCRAFT_`, `WGPU_`), the home folder
+    /// masked. A switch named in `secret` (`PHOTOCRAFT_CONTROL_TOKEN`), or whose name says it holds
+    /// a secret ([`is_secret_name`]), shows only "set (***)".
+    pub fn add_switches(&mut self, prefixes: &[&str], secret: &[&str]) {
         let vars: Vec<(String, String)> = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.to_string_lossy().into_owned()))).collect();
-        let found = switches(&vars, prefixes);
+        let found = switches(&vars, prefixes, secret);
         if found.is_empty() {
             self.add("switches", "environment", "none");
         }
@@ -106,15 +108,17 @@ impl Report {
         }
     }
 
-    /// Helper programs: ffmpeg (where it is on `PATH`, and its first version line).
+    /// Helper programs: ffmpeg (where it is on `PATH`, and its first version line). Waits for
+    /// `ffmpeg -version` (up to 3 s): for `<app>-cli diagnostics`. A window app uses
+    /// [`Report::add_helpers_later`] and [`log_helpers_in_background`] so its window never waits.
     pub fn add_helpers(&mut self) {
-        match find_on_path("ffmpeg") {
-            None => self.add("helpers", "ffmpeg", "not found on PATH"),
-            Some(p) => {
-                let version = first_line_of(&p, &["-version"], FFMPEG_TIMEOUT).unwrap_or_else(|why| format!("{UNKNOWN} ({why})"));
-                self.add("helpers", "ffmpeg", format!("{} ({version})", mask_home(&p.display().to_string())));
-            }
-        }
+        self.add("helpers", "ffmpeg", ffmpeg_helper(find_on_path("ffmpeg")));
+    }
+
+    /// The helpers' field for a report logged before they are probed: it points at the line
+    /// [`log_helpers_in_background`] writes when the answer arrives.
+    pub fn add_helpers_later(&mut self) {
+        self.add("helpers", "ffmpeg", "probed in the background: the \"report: [helpers] ffmpeg:\" line after this report");
     }
 
     /// Where the logs are: the folder, each named log (`("window log", path)`), and the newest
@@ -174,32 +178,105 @@ impl Report {
     }
 }
 
+/// The ffmpeg helper's value: where `found` is (home masked) and its first version line, or why
+/// not.
+pub fn ffmpeg_helper(found: Option<PathBuf>) -> String {
+    match found {
+        None => "not found on PATH".to_owned(),
+        Some(p) => {
+            let version = first_line_of(&p, &["-version"], FFMPEG_TIMEOUT).unwrap_or_else(|why| format!("{UNKNOWN} ({why})"));
+            format!("{} ({version})", mask_home(&p.display().to_string()))
+        }
+    }
+}
+
+/// Probe the helpers on a background thread and log `report: [helpers] ffmpeg: …` at info under
+/// `target` when the answer arrives (after [`Report::log`], so it follows the report). For a
+/// window app, whose window must not wait for `ffmpeg -version`. The handle gives the value
+/// (tests); `None` when no thread could be started (nothing is logged then).
+pub fn log_helpers_in_background(target: &'static str) -> Option<std::thread::JoinHandle<String>> {
+    probe_in_background(target, || ffmpeg_helper(find_on_path("ffmpeg")))
+}
+
+/// [`log_helpers_in_background`] with the probe given.
+pub fn probe_in_background(target: &'static str, probe: impl FnOnce() -> String + Send + 'static) -> Option<std::thread::JoinHandle<String>> {
+    std::thread::Builder::new()
+        .name("craft-helpers".into())
+        .spawn(move || {
+            let value = probe();
+            log::info!(target: target, "report: [helpers] ffmpeg: {value}");
+            value
+        })
+        .ok()
+}
+
 fn read(path: &str) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
-/// `~` in place of the home folder (`$HOME`, or `%USERPROFILE%` on Windows), wherever it starts a
-/// path in `text`.
+/// `~` in place of this machine's home folder ([`home_folders`]), wherever it is a whole path or
+/// starts one in `text`. On Windows the match ignores ASCII case, as its file names do.
 pub fn mask_home(text: &str) -> String {
-    let home = std::env::var("HOME").ok().or_else(|| std::env::var("USERPROFILE").ok());
-    mask_with(text, home.as_deref())
+    let homes = home_folders(&|k| std::env::var(k).ok(), cfg!(windows));
+    mask_homes(text, &homes, cfg!(windows))
 }
 
-/// [`mask_home`] with the home folder given: each occurrence followed by a path separator, the
-/// end of the text, or a character that cannot be in a name (space, quote, `:`, `;`), becomes `~`.
-/// `/home/deckard` is left alone when the home folder is `/home/deck`.
-pub fn mask_with(text: &str, home: Option<&str>) -> String {
-    let Some(home) = home.map(|h| h.trim_end_matches(['/', '\\'])).filter(|h| h.len() > 1) else { return text.to_owned() };
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(i) = rest.find(home) {
-        let after = &rest[i + home.len()..];
-        let boundary = after.chars().next().is_none_or(|c| matches!(c, '/' | '\\' | ' ' | '"' | '\'' | ':' | ';' | ',' | ')'));
-        out.push_str(&rest[..i]);
-        out.push_str(if boundary { "~" } else { home });
-        rest = after;
+/// The home folders to mask, longest first: on Unix `HOME`; on Windows `USERPROFILE`,
+/// `HOMEDRIVE` + `HOMEPATH`, and `HOME` when set (Git Bash and MSYS set it), each also written with
+/// forward slashes. `env` reads a variable (tests pass their own).
+pub fn home_folders(env: &dyn Fn(&str) -> Option<String>, windows: bool) -> Vec<String> {
+    let mut homes: Vec<String> = Vec::new();
+    let mut add = |h: Option<String>| {
+        if let Some(h) = h.map(|h| h.trim_end_matches(['/', '\\']).to_owned()).filter(|h| h.len() > 1) {
+            let forward = h.replace('\\', "/");
+            homes.push(h);
+            if windows {
+                homes.push(forward);
+            }
+        }
+    };
+    if windows {
+        add(env("USERPROFILE"));
+        add(env("HOMEDRIVE").zip(env("HOMEPATH")).map(|(d, p)| format!("{d}{p}")));
     }
-    out.push_str(rest);
+    add(env("HOME"));
+    homes.sort_by_key(|h| std::cmp::Reverse(h.len()));
+    homes.dedup();
+    homes
+}
+
+/// [`mask_home`] with the home folder given (case as given).
+pub fn mask_with(text: &str, home: Option<&str>) -> String {
+    let homes: Vec<String> = home.map(|h| h.trim_end_matches(['/', '\\']).to_owned()).into_iter().collect();
+    mask_homes(text, &homes, false)
+}
+
+/// Each occurrence of one of `homes` (tried in order) that is not followed by a character that
+/// could continue a folder name (a letter, a digit, `_` or `-`) becomes `~`: `/home/deck/x`,
+/// `/home/deck.`, `[/home/deck]`, `/home/deck&` and a home at the end of a line are masked;
+/// `/home/deckard` is left alone when the home folder is `/home/deck`. A home of one character
+/// (`/`) masks nothing.
+pub fn mask_homes(text: &str, homes: &[String], ignore_ascii_case: bool) -> String {
+    let mut out = text.to_owned();
+    for home in homes.iter().filter(|h| h.len() > 1) {
+        out = mask_one(&out, home, ignore_ascii_case);
+    }
+    out
+}
+
+fn mask_one(text: &str, home: &str, ignore_ascii_case: bool) -> String {
+    // ASCII lower-casing keeps every byte offset, so positions found in the copy hold in `text`
+    let (hay, needle) = if ignore_ascii_case { (text.to_ascii_lowercase(), home.to_ascii_lowercase()) } else { (text.to_owned(), home.to_owned()) };
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    while let Some(i) = hay[at..].find(&needle).map(|i| at + i) {
+        let end = i + needle.len();
+        let continues = text[end..].chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-');
+        out.push_str(&text[at..i]);
+        out.push_str(if continues { &text[i..end] } else { "~" });
+        at = end;
+    }
+    out.push_str(&text[at..]);
     out
 }
 
@@ -264,11 +341,24 @@ pub fn locale(env: &dyn Fn(&str) -> Option<String>) -> String {
     ["LC_ALL", "LANG"].iter().find_map(|k| env(k).filter(|v| !v.is_empty())).unwrap_or_else(|| UNKNOWN.into())
 }
 
+/// What a secret switch shows in place of its value.
+pub const SECRET_SET: &str = "set (***)";
+
+/// Whether a switch's name says it holds a secret (`…TOKEN…`, `…SECRET…`, `…PASSWORD…`,
+/// `…PASSWD…`, `…CREDENTIAL…`, `…API_KEY…`, `…AUTH…`), a guard for switches nobody listed.
+pub fn is_secret_name(name: &str) -> bool {
+    let n = name.to_ascii_uppercase();
+    ["TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "API_KEY", "AUTH"].iter().any(|w| n.contains(w))
+}
+
 /// The switches among `vars`: `CRAFT_*`, `RUST_LOG`, and names starting with one of `prefixes`,
-/// sorted by name.
-pub fn switches(vars: &[(String, String)], prefixes: &[&str]) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> =
-        vars.iter().filter(|(k, _)| k.starts_with("CRAFT_") || k == "RUST_LOG" || prefixes.iter().any(|p| k.starts_with(p))).cloned().collect();
+/// sorted by name; those named in `secret` or by [`is_secret_name`] show [`SECRET_SET`].
+pub fn switches(vars: &[(String, String)], prefixes: &[&str], secret: &[&str]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = vars
+        .iter()
+        .filter(|(k, _)| k.starts_with("CRAFT_") || k == "RUST_LOG" || prefixes.iter().any(|p| k.starts_with(p)))
+        .map(|(k, v)| if secret.contains(&k.as_str()) || is_secret_name(k) { (k.clone(), SECRET_SET.to_owned()) } else { (k.clone(), v.clone()) })
+        .collect();
     out.sort();
     out
 }
@@ -280,9 +370,19 @@ pub fn find_on_path(program: &str) -> Option<PathBuf> {
     std::env::split_paths(&path).flat_map(|d| names.iter().map(move |n| d.join(n))).find(|p| p.is_file())
 }
 
-/// Run `program args` and return the first line it printed, killing it after `timeout`.
+/// Run `program args` and return the first line it printed, killing it after `timeout`. On
+/// Windows it runs without a console window (`CREATE_NO_WINDOW`), so a window app that asks
+/// flashes none.
 pub fn first_line_of(program: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
-    let mut child = Command::new(program).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| e.to_string())?;
+    let mut command = Command::new(program);
+    command.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = command.spawn().map_err(|e| e.to_string())?;
     let start = Instant::now();
     loop {
         match child.try_wait() {
@@ -315,10 +415,21 @@ pub fn newest_file(dir: &Path, wanted: &dyn Fn(&str) -> bool) -> Option<PathBuf>
 }
 
 /// The last line of the file at `path` that contains `needle`, looking at its last `max_bytes`.
+/// Only a regular file is read: opening a FIFO waits for a writer (see [`crate::cli::open_append`]).
 pub fn last_line_with(path: &Path, needle: &str, max_bytes: u64) -> Option<String> {
     use std::io::{Read as _, Seek as _, SeekFrom};
-    let mut f = std::fs::File::open(path).ok()?;
-    let len = f.metadata().ok()?.len();
+    if !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    crate::cli::nonblocking(&mut options);
+    let mut f = options.open(path).ok()?;
+    let meta = f.metadata().ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let len = meta.len();
     f.seek(SeekFrom::Start(len.saturating_sub(max_bytes))).ok()?;
     let mut bytes = Vec::new();
     f.take(max_bytes).read_to_end(&mut bytes).ok()?;
@@ -348,6 +459,25 @@ mod tests {
         assert_eq!(mask_with("C:\\Users\\ian\\AppData", Some("C:\\Users\\ian\\")), "~\\AppData");
         assert_eq!(mask_with("/x", None), "/x");
         assert_eq!(mask_with("/x", Some("/")), "/x", "a root home masks nothing");
+    }
+
+    #[test]
+    fn the_home_folder_is_masked_before_any_character_that_cannot_continue_its_name() {
+        let home = Some("/home/deck");
+        for (text, want) in [
+            ("see /home/deck.", "see ~."),
+            ("[/home/deck]", "[~]"),
+            ("<path>/home/deck</path>", "<path>~</path>"),
+            ("a=/home/deck&b=1", "a=~&b=1"),
+            ("/home/deck\nnext", "~\nnext"),
+            ("/home/deck\tx", "~\tx"),
+            ("{\"dir\":\"/home/deck\"}", "{\"dir\":\"~\"}"),
+            ("/home/deck|/home/deck=", "~|~="),
+        ] {
+            assert_eq!(mask_with(text, home), want, "{text:?}");
+        }
+        // another user's folder whose name starts the same is not this home
+        assert_eq!(mask_with("/home/deck_2/x /home/deck-old /home/deck9", home), "/home/deck_2/x /home/deck-old /home/deck9");
     }
 
     #[test]
@@ -390,8 +520,38 @@ mod tests {
                 .iter()
                 .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
                 .collect();
-        let got: Vec<String> = switches(&vars, &["FILMCRAFT_", "WGPU_"]).into_iter().map(|(k, v)| format!("{k}={v}")).collect();
+        let got: Vec<String> = switches(&vars, &["FILMCRAFT_", "WGPU_"], &[]).into_iter().map(|(k, v)| format!("{k}={v}")).collect();
         assert_eq!(got, ["CRAFT_LOG=debug", "FILMCRAFT_DATA_DIR=/d", "RUST_LOG=info", "WGPU_BACKEND=vulkan"]);
+    }
+
+    #[test]
+    fn a_secret_switch_shows_only_that_it_is_set() {
+        let vars: Vec<(String, String)> = [("APP_CONTROL_TOKEN", "s3cr3t-value"), ("APP_DATA_DIR", "/d"), ("APP_REMOTE", "hunter2")]
+            .iter()
+            .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
+            .collect();
+        let got: Vec<String> = switches(&vars, &["APP_"], &["APP_REMOTE"]).into_iter().map(|(k, v)| format!("{k}={v}")).collect();
+        assert!(!got.iter().any(|l| l.contains("s3cr3t-value") || l.contains("hunter2")), "{got:?}");
+        // named in the list, or by its name
+        assert_eq!(got, ["APP_CONTROL_TOKEN=set (***)", "APP_DATA_DIR=/d", "APP_REMOTE=set (***)"]);
+    }
+
+    #[test]
+    fn the_home_folder_comes_from_the_platforms_own_variables() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| move |k: &str| pairs.iter().find(|(a, _)| *a == k).map(|(_, v)| (*v).to_owned());
+        // Windows does not set HOME: USERPROFILE, HOMEDRIVE + HOMEPATH, in both slash styles
+        let win = env(&[("USERPROFILE", "C:\\Users\\ian"), ("HOMEDRIVE", "D:"), ("HOMEPATH", "\\Users\\ian")]);
+        let homes = home_folders(&win, true);
+        assert_eq!(homes, ["C:\\Users\\ian", "C:/Users/ian", "D:\\Users\\ian", "D:/Users/ian"]);
+        assert_eq!(
+            mask_homes("C:\\Users\\ian\\AppData c:\\users\\IAN\\x C:/Users/ian/y D:\\Users\\ian. C:\\Users\\iana", &homes, true),
+            "~\\AppData ~\\x ~/y ~. C:\\Users\\iana"
+        );
+        // Git Bash's HOME is masked too
+        assert!(home_folders(&env(&[("USERPROFILE", "C:\\Users\\ian"), ("HOME", "/c/Users/ian")]), true).contains(&"/c/Users/ian".to_owned()));
+        // Unix: HOME only
+        assert_eq!(home_folders(&env(&[("HOME", "/home/deck/"), ("USERPROFILE", "x:\\y")]), false), ["/home/deck"]);
+        assert!(home_folders(&env(&[("HOME", "/")]), false).is_empty());
     }
 
     #[test]
@@ -419,7 +579,7 @@ mod tests {
     fn the_gathered_fields_are_never_missing() {
         let app = App { name: "testapp", version: "1.0.0", ours: "testapp", default_filter: "info" };
         let mut r = Report::new(&app);
-        r.add_switches(&["TESTAPP_"]);
+        r.add_switches(&["TESTAPP_"], &[]);
         r.add_helpers();
         for (s, k) in [("app", "commit"), ("system", "kernel"), ("system", "session"), ("processor", "threads"), ("memory", "total"), ("helpers", "ffmpeg")] {
             assert!(r.get(s, k).is_some_and(|v| !v.is_empty()), "{s}/{k} in {}", r.text());
@@ -440,6 +600,51 @@ mod tests {
         assert!(got.is_err_and(|e| e.contains("no answer")));
         assert!(t0.elapsed() < Duration::from_secs(3));
         assert_eq!(first_line_of(Path::new("/bin/echo"), &["hello"], FFMPEG_TIMEOUT).as_deref(), Ok("hello"));
+    }
+
+    #[test]
+    fn a_fifo_in_place_of_a_log_is_not_waited_for() {
+        let dir = std::env::temp_dir().join(format!("craft-log-report-fifo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("app.log");
+        if !Command::new("mkfifo").arg(&fifo).status().is_ok_and(|s| s.success()) {
+            return; // no mkfifo (Windows): nothing to check
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || tx.send(last_line_with(&fifo, "x", 10)));
+        let got = rx.recv_timeout(Duration::from_secs(5));
+        assert_eq!(got, Ok(None), "reading the previous run's end waited on a FIFO");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_helpers_are_probed_without_waiting() {
+        if !cfg!(unix) {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("craft-log-report-helpers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // an ffmpeg that takes a second to answer, as a cold disk or a virus scanner makes it
+        let slow = dir.join("ffmpeg");
+        std::fs::write(&slow, "#!/bin/sh\nsleep 1\necho \"ffmpeg version 9.9-test\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let t0 = Instant::now();
+        let probe = probe_in_background("report-test", move || ffmpeg_helper(Some(slow))).unwrap();
+        assert!(t0.elapsed() < Duration::from_millis(300), "the caller waited {:?}", t0.elapsed());
+        let value = probe.join().unwrap();
+        assert!(value.ends_with("(ffmpeg version 9.9-test)"), "{value}");
+        assert!(t0.elapsed() >= Duration::from_secs(1));
+        let mut r = Report::empty();
+        r.add_helpers_later();
+        assert!(r.get("helpers", "ffmpeg").is_some_and(|v| v.contains("background")));
+        assert_eq!(ffmpeg_helper(None), "not found on PATH");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

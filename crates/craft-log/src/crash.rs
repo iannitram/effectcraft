@@ -47,7 +47,8 @@ pub fn text(app: &App, message: &str, thread: &str, backtrace: &str, recent: &[S
 /// two panics in the same millisecond get `-2`, `-3`… before the extension.
 pub fn write(dir: &Path, app: &App, message: &str, thread: &str, backtrace: &str) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
-    let body = text(app, message, thread, backtrace, &collapse::recent(RING_LINES));
+    // a secret argument's value never reaches a file (the recent lines are already without it)
+    let body = text(app, &crate::cli::hide_secrets(message), thread, backtrace, &collapse::recent(RING_LINES));
     let name = file_name(SystemTime::now());
     let stem = name.strip_suffix(".txt").unwrap_or(&name);
     let mut last = None;

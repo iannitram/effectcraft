@@ -85,7 +85,10 @@ impl Drop for Capture {
             for l in lines.iter().skip(skip) {
                 out.push_str(l);
             }
-            eprint!("{out}");
+            // eprint! keeps the lines in the test harness's captured output, but panics when
+            // standard error cannot be written; a second panic escaping this destructor while the
+            // test unwinds would abort the whole test run, so it is caught here
+            let _ = std::panic::catch_unwind(|| eprint!("{out}"));
         }
     }
 }

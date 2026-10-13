@@ -13,3 +13,8 @@ workspace = true
 [dependencies]
 craft-stage = { path = "../craft-stage" }
 log = { workspace = true }
+
+# Whole-process checks (its own main: it starts copies of itself as the program under test).
+[[test]]
+name = "process"
+harness = false

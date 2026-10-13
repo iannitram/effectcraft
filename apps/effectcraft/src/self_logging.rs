@@ -55,7 +55,7 @@ pub fn start(backends: Option<eframe::wgpu::Backends>) {
     r.add("graphics", "adapter", "chosen when the window opens: the \"graphics:\" line after this report");
     r.add("screens", "screens and window", "known when the window opens: the \"decision: window:\" or \"window:\" lines after this report");
     report::folders(&mut r, settings.as_deref());
-    r.add_switches(report::SWITCH_PREFIXES);
+    r.add_switches(report::SWITCH_PREFIXES, report::SECRET_SWITCHES);
     r.add_helpers();
     report::previous_run(&mut r, &logs, &logs.join(report::PREVIOUS_LOG_FILE));
     report::logs(&mut r, &logs);
