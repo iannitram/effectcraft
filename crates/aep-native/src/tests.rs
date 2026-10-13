@@ -535,5 +535,5 @@ fn text_layers_bring_their_text() {
     let Value::Text(doc) = &l.props.prop("text/sourceText").unwrap().value else { panic!("not text") };
     assert_eq!((doc.text.as_str(), doc.font.as_str(), doc.size), ("Episode\nTitle", "Title-Bold", 96.0));
     assert_eq!(doc.fill, [0.75, 0.5, 0.25, 1.0]);
-    assert!(r.warnings.iter().any(|w| w.starts_with("text layer: its text, fonts, sizes, fill colours, tracking, leading, scale and alignment are imported")));
+    assert!(r.warnings.iter().any(|w| w.starts_with("text layer: its text, fonts, sizes, fill colours, tracking, leading, baseline shift, scale and alignment are imported")));
 }
