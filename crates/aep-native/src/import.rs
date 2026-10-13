@@ -251,6 +251,7 @@ pub fn import(project: &mut Project, bytes: &[u8], locate: &mut dyn FnMut(&Foota
         let Some(id) = cx.items.get(&it.id).copied() else { continue };
         let Some(mut comp) = project.comp(id).cloned() else { continue };
         build_layers(&mut cx, project, &mut comp, raw, id);
+        retime(&mut comp, raw.frame);
         if let Some(item) = project.item_mut(id) {
             item.kind = ItemKind::Comp(Arc::new(comp));
         }
@@ -278,6 +279,45 @@ fn effect_defs<'f>(nodes: &'f [RawNode], depth: usize, out: &mut BTreeMap<&'f st
             }
             RawKind::Group(g) => effect_defs(g, depth + 1, out),
             _ => {}
+        }
+    }
+}
+
+/// Carry a composition's times over by frame count instead of by seconds. After Effects
+/// stores them for the frame rate it shows (23.976 as 1000/23976 of a second a frame), and
+/// the composition here runs at the broadcast rate that number stands for (24000/1001). The
+/// two clocks differ by one part in a million: enough to put an in point a hair after the
+/// frame it belongs to, so that the layer shows one frame late and a stretched layer one
+/// source frame behind. `frame` is the file's frame duration. Times on the composition's
+/// clock are scaled (the composition's own, each layer's start, in and out, every key time);
+/// values that are times in a source (time remapping) are not. Nothing happens when the rates
+/// agree, or differ by more than a snap to a broadcast rate would explain.
+fn retime(comp: &mut Comp, frame: Rational) {
+    // file seconds * (scale / value) = frames; frames * (den / num) = seconds here
+    let num = (frame.scale as i128).saturating_mul(comp.frame_rate.den as i128);
+    let den = (frame.value as i128).saturating_mul(comp.frame_rate.num as i128);
+    if num <= 0 || den <= 0 || num == den || (num - den).abs().saturating_mul(1000) > den {
+        return;
+    }
+    let t = |x: Tick| Tick((x.0 as i128).saturating_mul(num).saturating_add(den / 2).div_euclid(den).clamp(i64::MIN as i128, i64::MAX as i128) as i64);
+    comp.duration = t(comp.duration);
+    comp.work_area = (t(comp.work_area.0), t(comp.work_area.1));
+    for l in &mut comp.layers {
+        l.start_time = t(l.start_time);
+        l.in_point = t(l.in_point);
+        l.out_point = t(l.out_point);
+        retime_keys(&mut l.props, &t, 0);
+    }
+}
+
+fn retime_keys(g: &mut PropGroup, t: &dyn Fn(Tick) -> Tick, depth: usize) {
+    if depth > 64 {
+        return;
+    }
+    for n in &mut g.children {
+        match n {
+            Node::Prop(p) => p.keys.iter_mut().for_each(|k| k.time = t(k.time)),
+            Node::Group(sub) => retime_keys(sub, t, depth + 1),
         }
     }
 }
