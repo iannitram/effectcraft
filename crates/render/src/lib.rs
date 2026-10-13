@@ -2370,6 +2370,8 @@ mod tests_frame_blend;
 #[cfg(test)]
 mod tests_mask_blur;
 #[cfg(test)]
+mod tests_mask_feather_edge;
+#[cfg(test)]
 mod tests_nested;
 #[cfg(test)]
 mod tests_paint;
