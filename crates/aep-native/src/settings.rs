@@ -148,6 +148,17 @@ fn changed(def: &RawParamDef, p: &RawProp) -> bool {
     def.default.iter().zip(&p.value).any(|(d, v)| (d - v).abs() > 1e-4 * d.abs().max(1.0))
 }
 
+/// The option a pop-up of this (normalised) name is set to, stored or default, normalised.
+fn popup_choice(defs: &[RawParamDef], params: &[RawNode], name: &str) -> Option<String> {
+    let def = defs.iter().find(|d| d.kind == param_kind::POPUP && norm(&d.name) == name)?;
+    let stored = stored(params, &def.match_name).filter(|p| p.keys.is_empty()).and_then(|p| p.value.first().copied());
+    let choice = stored.or(def.default.first().copied())?.round();
+    if !(1.0..=4096.0).contains(&choice) {
+        return None;
+    }
+    def.label.split('|').nth(choice as usize - 1).map(norm)
+}
+
 fn stored<'a>(params: &'a [RawNode], match_name: &str) -> Option<&'a RawProp> {
     params.iter().find(|n| n.match_name == match_name).and_then(|n| match &n.kind {
         RawKind::Prop(p) => Some(p),
@@ -333,6 +344,11 @@ pub(crate) fn apply(spec: &EffectSpec, fg: &mut PropGroup, effect: &str, params:
         if done != Some(true) && changed(def, raw) {
             out.unread.push(shown.to_string());
         }
+    }
+    // CC Spotlight always stores a Gel Layer (its own layer when none was picked), and only
+    // its "Gel …" render modes look at it.
+    if effect == "CC Spotlight" && !popup_choice(defs, params, "render").is_some_and(|r| r.starts_with("gel")) {
+        out.unread.retain(|u| norm(u) != "gel layer");
     }
     // Effect opacity and effect masks (After Effects CC 2014 and later).
     let options = params.iter().find(|n| n.match_name == "ADBE Effect Built In Params").and_then(|n| match &n.kind {

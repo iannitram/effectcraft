@@ -439,6 +439,28 @@ fn layer_choosers_point_at_their_layer() {
     assert!(r.warnings.iter().any(|w| w.contains("the layer it uses was not found")), "{:?}", r.warnings);
 }
 
+/// CC Spotlight stores a Gel Layer we have no parameter for. It only matters in the "Gel"
+/// render modes, so it keeps the effect off only then.
+#[test]
+fn a_gel_layer_only_counts_in_a_gel_render_mode() {
+    let defs = vec![
+        def("CC Spotlight-0000", 0, "", |_| {}),
+        slider("CC Spotlight-0007", "Intensity", 100.0, 400.0, false),
+        popup("CC Spotlight-0008", "Render", "Light Only|Light Add|Gel Only|Gel Add", 2),
+        def("CC Spotlight-0009", 0, "Gel Layer", |_| {}),
+    ];
+    let gel = vec![tdmn("CC Spotlight-0009"), list(b"tdbs", &[tdb4(1, false), chunk(b"cdat", &f64s(&[0.0])), chunk(b"tdpi", &1u32.to_be_bytes())])];
+    let light = effect("CC Spotlight", &defs, 1, &[stored("CC Spotlight-0007", 1, &[123.0]), gel.clone()].concat());
+    let (p, r) = run(&project(&[vec![("CC Spotlight", light)]]));
+    let g = effect_of(&p, &r, 0, 0);
+    assert!(g.enabled, "{:?}", r.warnings);
+    assert_eq!(num(&g, "intensity"), 123.0);
+    let with_gel = effect("CC Spotlight", &defs, 1, &[stored("CC Spotlight-0008", 1, &[3.0]), gel].concat());
+    let (p, r) = run(&project(&[vec![("CC Spotlight", with_gel)]]));
+    assert!(!effect_of(&p, &r, 0, 0).enabled);
+    assert!(r.warnings.iter().any(|w| w.contains("could not be carried over") && w.contains("Gel Layer")), "{:?}", r.warnings);
+}
+
 /// Fast Blur has no twin here: Gaussian Blur stands in with the same Blurriness, and the
 /// import list says so.
 #[test]
