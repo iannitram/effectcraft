@@ -13,6 +13,12 @@ const MAX_GROUP_DEPTH: usize = 48;
 const MAX_KEYS: usize = 200_000;
 /// Most points read for one mask shape.
 const MAX_POINTS: usize = 100_000;
+/// Most parameter definitions read for one effect.
+const MAX_PARAM_DEFS: usize = 4_096;
+/// Largest block of an effect's private data kept (Curves keeps 1 644 bytes, Levels 108).
+const MAX_BLOB: usize = 1 << 20;
+/// Most private data blocks kept for one property (one per keyframe).
+const MAX_BLOBS: usize = 20_000;
 
 /// A time as the file stores it: `value / scale` seconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -150,7 +156,13 @@ pub enum RawKind {
     /// An effect: display name and parameters (match names end in `-NNNN`, the parameter index).
     Effect {
         display: String,
+        /// The effect's own switch (the "fx" box), taken from bit 0 of the group's `tdsb`.
+        /// That reading is an assumption: see where it is read.
+        enabled: bool,
         params: Vec<RawNode>,
+        /// The effect's parameter list with kinds and defaults. A project stores it with the
+        /// first instance of each effect only; later instances have it empty.
+        defs: Vec<RawParamDef>,
     },
     /// A mask: its settings, then the same children as a group.
     Mask {
@@ -179,6 +191,58 @@ pub struct RawProp {
     pub value: Vec<f64>,
     pub keys: Vec<RawKey>,
     pub expression: Option<String>,
+    /// An effect's private data for this parameter (Curves' curve, Levels' numbers): one
+    /// block, or one per keyframe.
+    pub blobs: Vec<Vec<u8>>,
+    /// The layer a layer chooser points at, by its id in the composition (0 = none). An
+    /// effect's hidden input (parameter 0) points at the effect's own layer.
+    pub layer_ref: u32,
+}
+
+/// The kinds of effect parameter a project file names ([`RawParamDef::kind`]).
+pub mod param_kind {
+    /// A layer chooser (and the effect's hidden input, parameter 0).
+    pub const LAYER: u32 = 0;
+    /// A whole-number slider.
+    pub const INT_SLIDER: u32 = 1;
+    /// A slider stored as 16.16 fixed point.
+    pub const FIXED_SLIDER: u32 = 2;
+    pub const ANGLE: u32 = 3;
+    pub const CHECKBOX: u32 = 4;
+    pub const COLOR: u32 = 5;
+    pub const POINT: u32 = 6;
+    pub const POPUP: u32 = 7;
+    /// A slider stored as floating point.
+    pub const FLOAT_SLIDER: u32 = 10;
+    /// Private data only the effect understands.
+    pub const PRIVATE: u32 = 11;
+    pub const GROUP_START: u32 = 13;
+    pub const GROUP_END: u32 = 14;
+}
+
+/// One parameter of an effect as the project describes it (`LIST parT`: a `tdmn`, its `pard`
+/// and, for pop-ups and checkboxes, a `pdnm`).
+#[derive(Clone, Debug, Default)]
+pub struct RawParamDef {
+    pub match_name: String,
+    /// See [`param_kind`].
+    pub kind: u32,
+    /// The parameter's name in Effect Controls (empty for most checkboxes, whose name is the
+    /// label beside the box).
+    pub name: String,
+    /// A pop-up's options separated by `|`, or a checkbox's label.
+    pub label: String,
+    /// The default, in the units a property stores its value in (so comparable with
+    /// [`RawProp::value`]): a slider's number, an angle in degrees, 0/1 for a checkbox, a
+    /// pop-up's 1-based choice, a colour as alpha-red-green-blue 0..255, a point as fractions
+    /// of the layer. Empty when this reader does not understand the kind.
+    pub default: Vec<f64>,
+    /// A slider's highest valid value (0 when not a slider).
+    pub valid_max: f64,
+    /// A slider shown as a percentage.
+    pub percent: bool,
+    /// The default of a [`param_kind::PRIVATE`] parameter.
+    pub default_blob: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -389,6 +453,14 @@ fn read_group(group: &Chunk, depth: usize) -> Vec<RawNode> {
             mkif = Some(k.data);
             continue;
         }
+        // An effect's private data follows the property it belongs to: `LIST aRbs` holding one
+        // `aRbp`, or one per keyframe.
+        if k.is_list(b"aRbs") && match_name.is_none() {
+            if let Some(RawNode { kind: RawKind::Prop(p), .. }) = out.last_mut() {
+                p.blobs = k.kids.iter().filter(|b| b.is(b"aRbp") && b.data.len() <= MAX_BLOB).take(MAX_BLOBS).map(|b| b.data.to_vec()).collect();
+            }
+            continue;
+        }
         let (Some(ty), Some(mn)) = (k.list, match_name.as_ref()) else { continue };
         if mn == "ADBE Group End" {
             continue;
@@ -408,7 +480,13 @@ fn read_group(group: &Chunk, depth: usize) -> Vec<RawNode> {
                     inner.map(user_name).unwrap_or_default(),
                     RawKind::Effect {
                         display: k.first(b"fnam").map(|n| text_field(n.data)).unwrap_or_default(),
+                        // tdsb of the effect's group is 1 or 9 on 427 of the 436 effects in
+                        // the projects measured and 0 or 8 on the other nine (among them a
+                        // slow denoiser, the usual effect to leave switched off). Bit 0 is
+                        // taken as the effect's switch; not confirmed in After Effects.
+                        enabled: inner.and_then(|g| g.first(b"tdsb")).is_none_or(|t| u32_at(t.data, 0) & 1 == 1),
                         params: inner.map(|g| read_group(g, depth + 1)).unwrap_or_default(),
+                        defs: k.list(b"parT").map(read_param_defs).unwrap_or_default(),
                     },
                 )
             }
@@ -463,7 +541,78 @@ fn read_prop(tdbs: &Chunk) -> RawProp {
             }
         }
     }
-    RawProp { dims, spatial, value, keys, expression }
+    // tdpi: the id of the layer a layer chooser points at. Checked on a Time Displacement whose
+    // map is another layer of its composition, and on the hidden input of every effect looked
+    // at, which holds the id of the effect's own layer.
+    let layer_ref = tdbs.first(b"tdpi").map(|c| u32_at(c.data, 0)).unwrap_or(0);
+    RawProp { dims, spatial, value, keys, expression, blobs: Vec::new(), layer_ref }
+}
+
+/// The parameter definitions of an effect (`LIST parT`): a `tdmn` (the parameter's match name)
+/// followed by its `pard` and, for some kinds, a `pdnm` (pop-up options, checkbox label) or an
+/// `aRbp` (the default of a private-data parameter).
+///
+/// `pard` is 148 bytes in every project measured (After Effects 6.5 to 2025): the kind u32
+/// @12, the name as a C string @16 (32 bytes), then per kind:
+///
+/// | kind | default | also |
+/// |---|---|---|
+/// | whole-number slider | i32 @140 | highest valid value i32 @128 |
+/// | fixed-point slider | 16.16 @140 | highest valid value 16.16 @128, display flags u16 @146 (bit 0: percent) |
+/// | float slider | f32 @120 | highest valid value f32 @108, display flags u16 @126 |
+/// | angle | 16.16 @60, degrees | |
+/// | checkbox | u8 @60 | |
+/// | colour | alpha, red, green, blue bytes @60 | |
+/// | point | x 16.16 @68, y 16.16 @72, percent of the layer | |
+/// | pop-up | i16 @62, 1-based | |
+///
+/// Checked against defaults known from using After Effects (Glow Threshold 60%, Black &
+/// White's six sliders, Grid's white colour, Fractal Noise's centred offset).
+fn read_param_defs(part: &Chunk) -> Vec<RawParamDef> {
+    let mut out: Vec<RawParamDef> = Vec::new();
+    let fixed = |d: &[u8], o: usize| i32_at(d, o) as f64 / 65536.0;
+    for k in &part.kids {
+        if k.is(b"tdmn") {
+            if out.len() >= MAX_PARAM_DEFS {
+                break;
+            }
+            out.push(RawParamDef { match_name: text_field(k.data), kind: u32::MAX, ..Default::default() });
+            continue;
+        }
+        let Some(def) = out.last_mut() else { continue };
+        if k.is(b"pdnm") {
+            def.label = text_field(k.data).trim_end_matches('\0').to_string();
+        } else if k.is(b"aRbp") && k.data.len() <= MAX_BLOB {
+            def.default_blob = k.data.to_vec();
+        } else if k.is(b"pard") {
+            let d = k.data;
+            def.kind = u32_at(d, 12);
+            def.name = text_field(d.get(16..48).unwrap_or(&[]));
+            match def.kind {
+                param_kind::INT_SLIDER => {
+                    def.default = vec![i32_at(d, 140) as f64];
+                    def.valid_max = i32_at(d, 128) as f64;
+                }
+                param_kind::FIXED_SLIDER => {
+                    def.default = vec![fixed(d, 140)];
+                    def.valid_max = fixed(d, 128);
+                    def.percent = u16_at(d, 146) & 1 == 1;
+                }
+                param_kind::FLOAT_SLIDER => {
+                    def.default = vec![f32_at(d, 120)];
+                    def.valid_max = f32_at(d, 108);
+                    def.percent = u16_at(d, 126) & 1 == 1;
+                }
+                param_kind::ANGLE => def.default = vec![fixed(d, 60)],
+                param_kind::CHECKBOX => def.default = vec![f64::from(u8::from(u8_at(d, 60) != 0))],
+                param_kind::COLOR => def.default = (0..4).map(|i| u8_at(d, 60 + i) as f64).collect(),
+                param_kind::POINT => def.default = vec![fixed(d, 68) / 100.0, fixed(d, 72) / 100.0],
+                param_kind::POPUP => def.default = vec![i16_at(d, 62) as f64],
+                _ => {}
+            }
+        }
+    }
+    out
 }
 
 /// One keyframe. The first 8 bytes are the same for every kind: time i32 @0 (in the property's

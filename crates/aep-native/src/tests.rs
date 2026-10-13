@@ -6,6 +6,9 @@ use effectcraft_time::Tick;
 
 use crate::{FootageRef, import, is_aep};
 
+#[path = "tests_settings.rs"]
+mod settings;
+
 fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
     let mut v = id.to_vec();
     v.extend((data.len() as u32).to_be_bytes());
@@ -382,13 +385,13 @@ fn masks_and_effects() {
     assert_eq!(path.in_tangents[0], [80.0, 180.0]);
     assert_eq!(m.get("feather").unwrap().value, Value::Vec2([12.0, 12.0]));
     assert_eq!(m.get("opacity").unwrap().value, Value::Scalar(50.0));
-    // A known effect arrives switched off (its settings are not read yet); an unknown one is
-    // skipped; both are reported.
+    // A known effect with nothing changed arrives switched on (settings: `tests_settings.rs`);
+    // an unknown one is skipped and reported.
     let fx: Vec<_> = grade.effects().unwrap().groups().collect();
     assert_eq!(fx.len(), 1);
     assert_eq!(fx[0].name, "Invert");
-    assert!(!fx[0].enabled);
-    assert!(r.warnings.iter().any(|w| w.contains("effect Invert: added switched off")));
+    assert!(fx[0].enabled);
+    assert!(!r.warnings.iter().any(|w| w.contains("effect Invert")), "{:?}", r.warnings);
     assert!(r.warnings.iter().any(|w| w.contains("effect Made Up (ACME Made Up) has no EffectCraft equivalent")));
 }
 
@@ -405,6 +408,35 @@ fn the_caller_supplies_found_footage() {
     assert_eq!(r.missing_footage, 0);
     let ItemKind::Footage(f) = &p.find_by_name("plate.mov").unwrap().kind else { panic!("not footage") };
     assert_eq!((f.path.as_str(), f.missing), ("D:/copies/plate.mov", false));
+}
+
+/// Audio Levels (decibels, left and right) arrive with their keyframes on a layer whose
+/// source has sound; on one without, the import list says they were left out.
+#[test]
+fn audio_levels_and_their_keyframes() {
+    let key = |t: i32, db: f64| {
+        let mut k = key_head(t, 1);
+        k.extend(f64s(&[db, db, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]));
+        k
+    };
+    let audio = group(&[tdmn("ADBE Audio Levels"), list(b"tdbs", &[tdb4(2, false), key_list(88, &[key(0, -20.0), key(30_000, 0.0)])])]);
+    let layer = list(
+        b"Layr",
+        &[ldta(&L { id: 1, source: 12, ..Default::default() }), chunk(b"Utf8", b"Music"), group(&[tdmn("ADBE Audio Group"), audio])],
+    );
+    let comp = list(b"Item", &[idta(4, 30), chunk(b"Utf8", b"Comp"), cdta(1280, 720, 90), layer]);
+    let bytes = file(&[list(b"Fold", &[footage_item(12, 1280, 720, "C:\\media\\music.mov"), comp])]);
+    let mut p = Project::default();
+    let mut with_sound = |_: &FootageRef| -> Option<Footage> { Some(Footage { path: "D:/copies/music.mov".into(), width: 1280, height: 720, has_video: true, has_audio: true, ..Default::default() }) };
+    let r = import(&mut p, &bytes, &mut with_sound).unwrap();
+    let l = &p.comp(r.main_comp.unwrap()).unwrap().layers[0];
+    let keys = &l.props.prop("audio/levels").unwrap().keys;
+    assert_eq!(keys.len(), 2);
+    assert_eq!((&keys[0].value, &keys[1].value, keys[1].time), (&Value::Vec2([-20.0, -20.0]), &Value::Vec2([0.0, 0.0]), Tick::from_units(1, 1)));
+    assert!(!r.warnings.iter().any(|w| w.contains("audio")), "{:?}", r.warnings);
+    // The same project with the file not found: no sound to put the levels on.
+    let (_, r) = run(&bytes);
+    assert!(r.warnings.iter().any(|w| w.starts_with("audio levels not imported")), "{:?}", r.warnings);
 }
 
 /// A damaged or hostile file must give an error or a partial import, never a panic.
@@ -469,5 +501,5 @@ fn text_layers_bring_their_text() {
     let Value::Text(doc) = &l.props.prop("text/sourceText").unwrap().value else { panic!("not text") };
     assert_eq!((doc.text.as_str(), doc.font.as_str(), doc.size), ("Episode\nTitle", "Title-Bold", 96.0));
     assert_eq!(doc.fill, [0.75, 0.5, 0.25, 1.0]);
-    assert!(r.warnings.iter().any(|w| w.starts_with("text layer: its text, fonts, sizes and fill colours are imported")));
+    assert!(r.warnings.iter().any(|w| w.starts_with("text layer: its text, fonts, sizes, fill colours, tracking, leading, scale and alignment are imported")));
 }

@@ -150,3 +150,13 @@ pub const EFFECTS: &[(&str, &str)] = &[
 pub fn effect_id(match_name: &str) -> Option<&'static str> {
     EFFECTS.iter().find(|(ae, _)| *ae == match_name).map(|(_, ec)| *ec)
 }
+
+/// After Effects effects with no twin here that a close relative can stand in for: (After
+/// Effects match name, EffectCraft effect id, what the import list says).
+pub const STAND_INS: &[(&str, &str, &str)] =
+    &[("ADBE Fast Blur", "ec.blur.gaussian", "Gaussian Blur with the same Blurriness (the closest effect here; After Effects itself retired Fast Blur in its favour)")];
+
+/// The EffectCraft effect standing in for an After Effects effect, and the note to show.
+pub fn stand_in(match_name: &str) -> Option<(&'static str, &'static str)> {
+    STAND_INS.iter().find(|(ae, _, _)| *ae == match_name).map(|(_, ec, note)| (*ec, *note))
+}

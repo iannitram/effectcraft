@@ -9,13 +9,17 @@
 //! - the text: `/1 /1 #0 /0 /0`, lines separated by carriage returns, one more at the end;
 //! - the style runs: `/1 /1 #0 /0 /6 /0 #n`, each `/1` a length in UTF-16 units and
 //!   `/0 /0 /6` its character style, of which `/0` is the font's index, `/1` the size in
-//!   pixels, `/2` and `/3` faux bold and italic, and `/53 /0 /1` the fill colour as alpha, red,
-//!   green, blue.
+//!   pixels, `/2` and `/3` faux bold and italic, `/4` whether leading is automatic and `/5` the
+//!   leading in pixels, `/6` and `/7` the horizontal and vertical scale (1.0 = 100%), `/8` the
+//!   tracking, and `/53 /0 /1` the fill colour as alpha, red, green, blue;
+//! - the paragraph runs: `/1 /1 #0 /0 /5 /0 #n`, of whose paragraph style `/0 /0 /5` the key
+//!   `/0` is the alignment: 0 left, 1 right, 2 centre (across 39 paragraphs measured: every
+//!   title that sits centred in its reference export has 2).
 //!
-//! Everything else in the document (stroke, tracking, leading, paragraph settings) is left at
-//! EffectCraft's defaults for now; the importer says so.
+//! Everything else in the document (stroke, baseline shift, box text, the other paragraph
+//! settings) is left at EffectCraft's defaults for now; the importer says so.
 
-use effectcraft_keyframe::{StyleRun, TextDoc};
+use effectcraft_keyframe::{Justify, StyleRun, TextDoc};
 
 /// Deepest nesting followed and most values read: the document comes from the file.
 const MAX_DEPTH: usize = 64;
@@ -259,6 +263,21 @@ pub(crate) fn text_doc(blob: &[u8]) -> Option<ReadText> {
         if let Some(i) = feat.get("3").and_then(Cos::bool) {
             style.faux_italic = i;
         }
+        // Leading: a number only counts when automatic leading is off.
+        if feat.get("4").and_then(Cos::bool) == Some(false)
+            && let Some(leading) = feat.get("5").and_then(Cos::num).filter(|l| *l > 0.0)
+        {
+            style.leading = Some(leading.min(100_000.0));
+        }
+        if let Some(h) = feat.get("6").and_then(Cos::num).filter(|s| *s > 0.0) {
+            style.h_scale = (h * 100.0).min(100_000.0);
+        }
+        if let Some(v) = feat.get("7").and_then(Cos::num).filter(|s| *s > 0.0) {
+            style.v_scale = (v * 100.0).min(100_000.0);
+        }
+        if let Some(t) = feat.get("8").and_then(Cos::num) {
+            style.tracking = t.clamp(-100_000.0, 100_000.0);
+        }
         if let Some(c) = feat.path(&["53", "0", "1"]) {
             let ch = |i: usize| c.at(i).and_then(Cos::num).unwrap_or(1.0).clamp(0.0, 1.0) as f32;
             if c.items().len() >= 4 {
@@ -279,6 +298,14 @@ pub(crate) fn text_doc(blob: &[u8]) -> Option<ReadText> {
     if !runs.is_empty() {
         doc.set_runs(runs);
     }
+    // Alignment: the first paragraph's (the titles this was measured on are one paragraph, or
+    // several set alike).
+    let align = story.path(&["5", "0", "#0", "0", "0", "5", "0"]).and_then(Cos::num);
+    doc.justify = match align.map(|a| a.round() as i64) {
+        Some(1) => Justify::Right,
+        Some(2) => Justify::Center,
+        _ => Justify::Left,
+    };
     Some(ReadText { doc, partial: true })
 }
 
@@ -340,6 +367,29 @@ pub(crate) mod tests {
         // The emoji is two UTF-16 units and one character; the closing return is dropped.
         assert_eq!((runs[1].len, runs[1].style.font.as_str(), runs[1].style.size), (t.doc.char_len() - 2, "Body-Regular", 48.5));
         assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), t.doc.char_len());
+    }
+
+    fn replace(d: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+        let at = d.windows(from.len()).position(|w| w == from).unwrap();
+        [&d[..at], to, &d[at + from.len()..]].concat()
+    }
+
+    #[test]
+    fn alignment_tracking_leading_and_scale() {
+        let plain = document("Episode\rTitle\r", &[(14, 0, 96.0, [1.0, 1.0, 1.0, 1.0])]);
+        // As written: left-aligned, automatic leading, no tracking, scale 100%.
+        let t = text_doc(&plain).unwrap();
+        assert_eq!((t.doc.justify, t.doc.leading, t.doc.tracking, t.doc.h_scale, t.doc.v_scale), (Justify::Left, None, 0.0, 100.0, 100.0));
+        let styled = replace(&plain, b"/5 << /0 [ ] >>", b"/5 << /0 [ << /0 << /0 << /0 (Normal RGB) /5 << /0 2 /1 0.0 >> >> >> /1 14 >> ] >>");
+        let styled = replace(&styled, b"/2 false /3 true", b"/2 false /3 true /4 false /5 90.0 /6 1.5 /7 0.5 /8 100");
+        let t = text_doc(&styled).unwrap();
+        assert_eq!(t.doc.text, "Episode\nTitle");
+        assert_eq!((t.doc.justify, t.doc.leading, t.doc.tracking, t.doc.h_scale, t.doc.v_scale), (Justify::Center, Some(90.0), 100.0, 150.0, 50.0));
+        // Right alignment, and a leading number that does not count while leading is automatic.
+        let right = replace(&styled, b"/5 << /0 2 /1 0.0 >>", b"/5 << /0 1 /1 0.0 >>");
+        let right = replace(&right, b"/4 false /5 90.0", b"/4 true /5 0.01");
+        let t = text_doc(&right).unwrap();
+        assert_eq!((t.doc.justify, t.doc.leading), (Justify::Right, None));
     }
 
     #[test]
