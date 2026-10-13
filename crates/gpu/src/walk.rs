@@ -299,6 +299,12 @@ fn draw_precomp(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas:
 /// resident on the GPU (non-GPU effects read back, run on the CPU and upload), and the result
 /// replaces the canvas inside the layer's footprint × opacity. `None` = draw it on the CPU.
 fn draw_adjustment(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &mut GpuImage) -> Option<()> {
+    // UNTESTED, NOT EVEN COMPILED (written 2026-10-13 with no GPU available): `adjust_mix`
+    // below is a Normal mix, so an adjustment layer with any other blending mode is drawn on
+    // the CPU, which blends the adjusted picture with the layer's mode.
+    if layer.blend_mode != BlendMode::Normal {
+        return None;
+    }
     let opacity = r.layer_opacity(ctx, layer);
     let Some(foot) = r.adjustment_footprint(ctx, layer) else { return Some(()) };
     let (w, h) = (canvas.width, canvas.height);
