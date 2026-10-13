@@ -1043,6 +1043,29 @@ mod tests {
         assert_eq!(Inner::frame_count(r, Tick(2 * TICKS_PER_SECOND)), 60);
     }
 
+    /// The time a movie's decoder is asked for sits inside the frame and short of its middle.
+    /// A reader that rounds the time to the nearest timestamp unit (FilmCraft's MP4 and Matroska
+    /// readers do) rounds the exact middle up, and when a unit is one whole frame (an MP4 with
+    /// timescale 12 at 12 fps) that is the next frame.
+    #[test]
+    fn a_movie_is_asked_for_a_time_short_of_the_middle_of_its_frame() {
+        for (num, den) in [(12, 1), (24, 1), (25, 1), (30, 1), (60, 1), (24_000, 1001), (30_000, 1001)] {
+            let rate = FrameRate { num, den };
+            let footage =
+                Footage { path: "/clip.mp4".into(), kind: FootageKind::Video, has_video: true, frame_rate: rate, duration: Tick(10 * TICKS_PER_SECOND), ..Default::default() };
+            for i in [0i64, 1, 6, 15, 100] {
+                let loc = Inner::locate(&footage, rate.tick_of(i), FloatCurve::Srgb);
+                assert_eq!(loc.key.frame, i);
+                let mt = loc.media_t.unwrap();
+                assert!(mt >= rate.tick_of(i), "{num}/{den} frame {i}: before the frame");
+                // twice the time, in frames, is below 2i + 1
+                let twice = mt.0 as i128 * 2 * num as i128;
+                let middle = (2 * i as i128 + 1) * TICKS_PER_SECOND as i128 * den as i128;
+                assert!(twice < middle, "{num}/{den} frame {i}: at or past the middle of the frame");
+            }
+        }
+    }
+
     #[test]
     fn lru_respects_budget_and_recycles() {
         let mut c = Lru::default();
