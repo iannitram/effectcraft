@@ -39,10 +39,19 @@ pub(super) fn placed(handles: &[MonitorHandle], monitors: &[Monitor], home: Opti
     let (from, changed) = match saved {
         None => {
             let fitted = g.maximized || g.size != DEFAULT_SIZE;
-            (format!("no saved geometry: the default {:.0}x{:.0}", DEFAULT_SIZE[0], DEFAULT_SIZE[1]), fitted.then_some("the default size does not fit: maximized"))
+            (
+                format!("no saved geometry: the default {:.0}x{:.0}", DEFAULT_SIZE[0], DEFAULT_SIZE[1]),
+                fitted.then_some("the default size does not fit: maximized"),
+            )
         }
         Some(s) => {
-            let was = format!("saved geometry used ({:.0}x{:.0}, {}, maximized {})", s.size[0], s.size[1], s.pos.map_or_else(|| "no position".to_owned(), |[x, y]| format!("at ({x}, {y})")), s.maximized);
+            let was = format!(
+                "saved geometry used ({:.0}x{:.0}, {}, maximized {})",
+                s.size[0],
+                s.size[1],
+                s.pos.map_or_else(|| "no position".to_owned(), |[x, y]| format!("at ({x}, {y})")),
+                s.maximized
+            );
             let why = if g.size != s.size {
                 Some("fitted to its screen")
             } else if g.maximized && !s.maximized {

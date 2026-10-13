@@ -45,12 +45,7 @@ pub fn folders(r: &mut Report, settings: Option<&Path>) {
     r.add(
         "folders",
         "settings",
-        format!(
-            "{} (preferences {}, saved window {})",
-            show(dir),
-            exists(effectcraft_engine::prefs::PREFS_FILE),
-            exists("window.json")
-        ),
+        format!("{} (preferences {}, saved window {})", show(dir), exists(effectcraft_engine::prefs::PREFS_FILE), exists("window.json")),
     );
     let plugins = dir.join("Plug-ins");
     r.add("folders", "plug-ins", if plugins.is_dir() { show(&plugins) } else { format!("{} (none)", show(&plugins)) });

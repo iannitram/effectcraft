@@ -84,7 +84,12 @@ fn system_report(r: &mut craft_log::report::Report) {
     r.add(
         "effectcraft",
         "cache budgets",
-        format!("layer {}, footage {}, preview {}", c["layer"].as_str().unwrap_or("?"), c["footage"].as_str().unwrap_or("?"), c["preview"].as_str().unwrap_or("?")),
+        format!(
+            "layer {}, footage {}, preview {}",
+            c["layer"].as_str().unwrap_or("?"),
+            c["footage"].as_str().unwrap_or("?"),
+            c["preview"].as_str().unwrap_or("?")
+        ),
     );
     let export = v["export"].as_array().map_or(0, Vec::len);
     r.add("effectcraft", "export formats", export.to_string());

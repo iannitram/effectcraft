@@ -7,7 +7,8 @@ use effectcraft_engine::config::ConfigStore;
 use serde::{Deserialize, Serialize};
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 
-#[path = "self_logging_window.rs"] mod self_logging; // ours
+#[path = "self_logging_window.rs"] // ours
+mod self_logging; // ours
 
 const FILE: &str = "window.json";
 const MAX_BYTES: usize = 4096;

@@ -111,4 +111,3 @@ pub fn window_check(cc: &eframe::CreationContext<'_>, opened: Option<WindowGeome
         }),
     );
 }
-

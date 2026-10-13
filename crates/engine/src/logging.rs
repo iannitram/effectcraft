@@ -136,7 +136,7 @@ pub fn install() {
 }
 
 /// Ours (self-logging): the logger with `spec` as its filter, NOT installed, and its level ceiling, for craft-log to wrap.
-pub fn unwrapped(spec: &str) -> (&'static dyn log::Log, LevelFilter) { // ours
+pub fn unwrapped(spec: &str) -> (&'static dyn log::Log, LevelFilter) {
     static LOGGER: Logger = Logger; // ours
     let filter = FILTER.get_or_init(|| parse_filter(spec)); // ours
     (&LOGGER, filter.iter().map(|d| d.1).fold(LevelFilter::Info, Ord::max)) // ours

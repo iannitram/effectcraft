@@ -124,7 +124,7 @@ fn draw_3d<'a>(e: &mut Enc, r: &Renderer<'a>, ctx: &EvalCtx<'a>, run: &[&'a Laye
         match crate::adv3d::draw_run(e, &prep, canvas) {
             Some(img) => *canvas = img,
             None => {
-                crate::self_logging::run_3d("Advanced 3D: the GPU renderer declined the run", run, canvas.width, canvas.height); // ours
+                crate::self_logging::run_3d(crate::self_logging::ADV_3D, run, canvas.width, canvas.height); // ours
                 on_cpu(e, canvas, |img| r.draw_3d_run(ctx, run, img))?
             }
         }
@@ -136,7 +136,7 @@ fn draw_3d<'a>(e: &mut Enc, r: &Renderer<'a>, ctx: &EvalCtx<'a>, run: &[&'a Laye
         match draw_split(e, r, ctx, &split, canvas) {
             Some(img) => *canvas = img,
             None => {
-                crate::self_logging::run_3d("Advanced 3D with 2D-composited layers: the GPU split path declined the run", run, canvas.width, canvas.height); // ours
+                crate::self_logging::run_3d(crate::self_logging::SPLIT_3D, run, canvas.width, canvas.height); // ours
                 on_cpu(e, canvas, |img| r.draw_3d_run(ctx, run, img))?
             }
         }
@@ -145,7 +145,7 @@ fn draw_3d<'a>(e: &mut Enc, r: &Renderer<'a>, ctx: &EvalCtx<'a>, run: &[&'a Laye
     match r.prepare_3d_run(ctx, run, (canvas.width, canvas.height)).and_then(|prep| crate::classic3d::draw_run(e, &prep, canvas)) {
         Some(img) => *canvas = img,
         None => {
-            crate::self_logging::run_3d("Classic 3D: the run cannot be prepared for the GPU kernel, or the kernel declined it", run, canvas.width, canvas.height); // ours
+            crate::self_logging::run_3d(crate::self_logging::CLASSIC_3D, run, canvas.width, canvas.height); // ours
             on_cpu(e, canvas, |img| r.draw_3d_run(ctx, run, img))?
         }
     }
@@ -266,18 +266,18 @@ fn draw_layer(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &
 /// `Some(None)`: the GPU failed.
 fn draw_precomp(e: &mut Enc, r: &Renderer, ctx: &EvalCtx, layer: &Layer, canvas: &mut GpuImage, opacity: f32) -> Option<Option<()>> {
     if layer.masks().is_some_and(|m| !m.children.is_empty()) || styles::active(ctx, layer) {
-        crate::self_logging::precomp(layer, "the precomp layer has masks or layer styles"); // ours
+        crate::self_logging::precomp(layer, crate::self_logging::PRECOMP_MASKED); // ours
         return None;
     }
     let Some((sub, item, lt, bs)) = r.precomp_source(ctx, layer) else {
-        crate::self_logging::precomp(layer, "it needs the CPU path (a cycle, content times, a proxy, essential overrides, frame blending, or a time outside the nested comp)"); // ours
+        crate::self_logging::precomp(layer, crate::self_logging::PRECOMP_CPU_PATH); // ours
         return None;
     };
     // A nested comp the GPU can't take (nested too deep, over the texture limit, content it
     // declines) goes back to the CPU path for this layer only; only a device failure fails the
     // frame.
     let Some(mut src) = render(e, &sub, item, lt) else {
-        crate::self_logging::precomp(layer, "the GPU could not render the nested comp (the line before says why, when it is the size or the depth)"); // ours
+        crate::self_logging::precomp(layer, crate::self_logging::PRECOMP_NOT_RENDERED); // ours
         return if e.g.check_health().is_ok() { None } else { Some(None) };
     };
     let pipe = r.pipe();

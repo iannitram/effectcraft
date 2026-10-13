@@ -9,6 +9,15 @@ use std::sync::{Mutex, PoisonError};
 use effectcraft_color::BlendMode;
 use effectcraft_project::{Layer, LayerSource};
 
+/// The reasons the walk names (one line per call site there).
+pub(crate) const ADV_3D: &str = "Advanced 3D: the GPU renderer declined the run";
+pub(crate) const SPLIT_3D: &str = "Advanced 3D with 2D-composited layers: the GPU split path declined the run";
+pub(crate) const CLASSIC_3D: &str = "Classic 3D: the run cannot be prepared for the GPU kernel, or the kernel declined it";
+pub(crate) const PRECOMP_MASKED: &str = "the precomp layer has masks or layer styles";
+pub(crate) const PRECOMP_CPU_PATH: &str =
+    "it needs the CPU path (a cycle, content times, a proxy, essential overrides, frame blending, or a time outside the nested comp)";
+pub(crate) const PRECOMP_NOT_RENDERED: &str = "the GPU could not render the nested comp (the line before says why, when it is the size or the depth)";
+
 static SAID: Mutex<Option<HashSet<(&'static str, &'static str)>>> = Mutex::new(None);
 
 /// Whether (`kind`, `reason`) is new in this process (and remember it).
@@ -40,7 +49,8 @@ pub(crate) fn frame(depth: usize, w: u32, h: u32, max_dim: u32) {
 /// An adjustment layer `draw_adjustment` declined.
 pub(crate) fn adjustment(l: &Layer) {
     if l.blend_mode != BlendMode::Normal {
-        on_cpu("adjustment layer", "its blending mode is not Normal (the GPU's adjust mix is Normal only)", || format!("{}, mode {:?}", layer(l), l.blend_mode));
+        let why = "its blending mode is not Normal (the GPU's adjust mix is Normal only)";
+        on_cpu("adjustment layer", why, || format!("{}, mode {:?}", layer(l), l.blend_mode));
     } else {
         on_cpu("adjustment layer", "a GPU step declined it", || layer(l));
     }
