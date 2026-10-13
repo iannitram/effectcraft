@@ -15,17 +15,18 @@
 //! area, pixel aspect), solids, linked files (found by the caller, or kept as missing footage
 //! with the recorded size and duration), and layers: source, name, label, timing (start, in,
 //! out, whole-number stretch), switches, blend mode, parent, track matte, the transform group
-//! with keyframes (interpolation kind, ease, spatial tangents), time remapping, masks (mode,
-//! inverted, path with keyframes, feather, opacity, expansion), and effects with their
-//! settings: sliders, angles, checkboxes, pop-ups, colours and points with their keyframes,
-//! plus the private data of Levels and Curves (`settings`). An effect with a setting that
-//! could not be carried over is added switched off, and the setting is named.
+//! with keyframes (interpolation kind, ease, spatial tangents), time remapping, audio levels
+//! with keyframes, masks (mode, inverted, path with keyframes, feather, opacity, expansion),
+//! and effects with their settings: sliders, angles, checkboxes, pop-ups, colours, points and
+//! layer choosers with their keyframes, plus the private data of Levels, Curves and Colorama
+//! (`settings`). An effect with a setting that could not be carried over is added switched
+//! off, and the setting is named. Text layers bring their text, fonts, sizes, fill colours,
+//! tracking, leading, scale and alignment (`text`).
 //!
 //! **What is not, yet** (each is listed in [`ImportResult::warnings`] when a project uses it):
-//! effect settings of kinds not listed above (layer choosers, other effects' private data),
-//! text settings beyond the text itself, its fonts, sizes and fill colours, shape layer
-//! contents, camera and light options, layer styles, expressions, markers, audio levels,
-//! separated position dimensions, orientation, fractional time stretch.
+//! other effects' private data and colour keyframes, text stroke, baseline shift, box text
+//! and animators, shape layer contents, camera and light options, layer styles, expressions,
+//! markers, separated position dimensions, orientation, fractional time stretch.
 //!
 //! Keyframe times in the file are layer time, which is EffectCraft's convention too.
 

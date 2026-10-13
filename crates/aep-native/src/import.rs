@@ -621,7 +621,7 @@ fn build_layers(cx: &mut Ctx, project: &mut Project, comp: &mut Comp, raw: &RawC
                     (Some(read), Some(st)) => {
                         st.value = Value::Text(Box::new(read.doc));
                         if read.partial {
-                            cx.warn.add("text layer: its text, fonts, sizes and fill colours are imported; tracking, leading, stroke, alignment and animators are not yet");
+                            cx.warn.add("text layer: its text, fonts, sizes, fill colours, tracking, leading, scale and alignment are imported; stroke, baseline shift, box text and animators are not yet");
                         }
                     }
                     _ => cx.warn.add("text layer: its text could not be read (placeholder text)"),
@@ -659,8 +659,21 @@ fn build_layers(cx: &mut Ctx, project: &mut Project, comp: &mut Comp, raw: &RawC
                     l.props.children.insert(0, Node::Prop(pr));
                 }
                 ("ADBE Audio Group", RawKind::Group(a)) => {
-                    if a.iter().any(|p| matches!(&p.kind, RawKind::Prop(rp) if !rp.keys.is_empty())) {
-                        cx.warn.add("audio level keyframes not imported");
+                    // Audio Levels: left and right in decibels, here as there.
+                    let levels = a.iter().find_map(|p| match &p.kind {
+                        RawKind::Prop(rp) if p.match_name == "ADBE Audio Levels" => Some(rp),
+                        _ => None,
+                    });
+                    if let Some(rp) = levels {
+                        match l.props.sub_mut("audio").and_then(|g| g.get_mut("levels")) {
+                            Some(target) => {
+                                apply(target, rp, 1.0, &vec2);
+                            }
+                            None if !rp.keys.is_empty() || rp.value.iter().any(|v| *v != 0.0) => {
+                                cx.warn.add("audio levels not imported (the layer's source has no sound here, or was not found)");
+                            }
+                            None => {}
+                        }
                     }
                 }
                 ("ADBE Layer Styles", RawKind::Group(_)) | ("ADBE Transform Group", _) => {}
