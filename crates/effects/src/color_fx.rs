@@ -651,6 +651,11 @@ pub const COLORAMA_PRESETS: [&str; 9] = ["Hue Cycle", "Ramp Grayscale", "Fire", 
 const COLORAMA_MODIFY: [&str; 12] =
     ["All", "Red", "Green", "Blue", "Hue", "Lightness", "Saturation", "Value", "Red & Green", "Green & Blue", "Blue & Red", "None"];
 
+/// Where a full-intensity pixel lands on the wheel, and where the built-in ramps put their
+/// last colour: one step short of a full turn. The wheel closes on itself, so a full turn
+/// would be its start again (white through a black-to-white ramp would come out black).
+pub const COLORAMA_CYCLE_END: f32 = 65_535.0 / 65_536.0;
+
 /// An output cycle: colour stops around the wheel (position 0..1, straight RGBA), cyclic.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColoramaPalette {
@@ -662,12 +667,12 @@ impl ColoramaPalette {
     pub fn preset(i: u32) -> ColoramaPalette {
         let s = |v: &[(f32, [f32; 3])]| ColoramaPalette { stops: v.iter().map(|(p, c)| (*p, [c[0], c[1], c[2], 1.0])).collect() };
         match i {
-            1 => s(&[(0.0, [0.0; 3]), (0.999, [1.0; 3])]),
-            2 => s(&[(0.0, [0.0, 0.0, 0.0]), (0.3, [0.7, 0.05, 0.0]), (0.6, [1.0, 0.55, 0.0]), (0.85, [1.0, 0.95, 0.4]), (0.999, [1.0, 1.0, 1.0])]),
-            3 => s(&[(0.0, [0.0, 0.0, 0.1]), (0.4, [0.1, 0.3, 0.8]), (0.75, [0.5, 0.85, 1.0]), (0.999, [1.0, 1.0, 1.0])]),
-            4 => s(&[(0.0, [0.0; 3]), (0.999, [1.0, 0.0, 0.0])]),
-            5 => s(&[(0.0, [0.0; 3]), (0.999, [0.0, 1.0, 0.0])]),
-            6 => s(&[(0.0, [0.0; 3]), (0.999, [0.0, 0.0, 1.0])]),
+            1 => s(&[(0.0, [0.0; 3]), (COLORAMA_CYCLE_END, [1.0; 3])]),
+            2 => s(&[(0.0, [0.0, 0.0, 0.0]), (0.3, [0.7, 0.05, 0.0]), (0.6, [1.0, 0.55, 0.0]), (0.85, [1.0, 0.95, 0.4]), (COLORAMA_CYCLE_END, [1.0, 1.0, 1.0])]),
+            3 => s(&[(0.0, [0.0, 0.0, 0.1]), (0.4, [0.1, 0.3, 0.8]), (0.75, [0.5, 0.85, 1.0]), (COLORAMA_CYCLE_END, [1.0, 1.0, 1.0])]),
+            4 => s(&[(0.0, [0.0; 3]), (COLORAMA_CYCLE_END, [1.0, 0.0, 0.0])]),
+            5 => s(&[(0.0, [0.0; 3]), (COLORAMA_CYCLE_END, [0.0, 1.0, 0.0])]),
+            6 => s(&[(0.0, [0.0; 3]), (COLORAMA_CYCLE_END, [0.0, 0.0, 1.0])]),
             7 => s(&[(0.0, [1.0, 0.7, 0.7]), (1.0 / 3.0, [0.7, 1.0, 0.7]), (2.0 / 3.0, [0.7, 0.7, 1.0])]),
             _ => s(&[
                 (0.0, [1.0, 0.0, 0.0]),
@@ -791,7 +796,9 @@ fn colorama(ctx: &EffectCtx, mut b: Buf) -> Buf {
                 _ => (p + q).rem_euclid(1.0),
             };
         }
-        let ph = (p * cycles + shift).rem_euclid(1.0);
+        // A phase at the very top (a pure white pixel under Intensity) is the end of the
+        // cycle, not its start again.
+        let ph = (p.min(COLORAMA_CYCLE_END) * cycles + shift).rem_euclid(1.0);
         let pc = palette.eval(ph, smooth);
         let (h, s, l) = rgb_to_hsl(c[0], c[1], c[2]);
         let (ph_, ps, pl) = rgb_to_hsl(pc[0], pc[1], pc[2]);
@@ -1393,6 +1400,28 @@ mod tests {
         // Without masks, Fill fills the layer as before.
         let plain = run_fx("ec.generate.fill", &[("fillMask", num(1.0))], grey.clone(), 0.0, EffectEnv::default()).img;
         assert_eq!(plain.get(10, 5), [1.0, 0.0, 0.0, 1.0]);
+    }
+
+    /// Pure white is the end of the cycle, not its start: through a black-to-white ramp it
+    /// stays white (it came out black), with the built-in ramp and with a custom one that
+    /// ends where After Effects' ramps end, also when the cycle repeats.
+    #[test]
+    fn colorama_keeps_full_intensity_at_the_end_of_the_cycle() {
+        let white = [1.0, 1.0, 1.0, 1.0];
+        let ramp = [("outputCycle/usePresetPalette", Value::Enum(1))];
+        let out = px("ec.color.colorama", &ramp, white);
+        assert!(out[0] > 0.999 && out[1] > 0.999 && out[2] > 0.999, "{out:?}");
+        let custom = [("outputCycle/usePresetPalette", Value::Enum(8)), ("outputCycle/palette", Value::Str("0:0,0,0 0.999985:1,1,1".into()))];
+        let out = px("ec.color.colorama", &custom, white);
+        assert!(out[0] > 0.999, "{out:?}");
+        let twice = [("outputCycle/usePresetPalette", Value::Enum(1)), ("outputCycle/cycles", num(2.0))];
+        let out = px("ec.color.colorama", &twice, white);
+        assert!(out[0] > 0.999, "{out:?}");
+        // Just under white was already right and stays so; black stays black.
+        let near = px("ec.color.colorama", &ramp, [0.99, 0.99, 0.99, 1.0]);
+        assert!((near[0] - 0.99).abs() < 0.01, "{near:?}");
+        let black = px("ec.color.colorama", &ramp, [0.0, 0.0, 0.0, 1.0]);
+        assert!(black[0] < 1e-4, "{black:?}");
     }
 
     #[test]
