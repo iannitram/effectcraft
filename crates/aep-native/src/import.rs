@@ -299,7 +299,20 @@ fn retime(comp: &mut Comp, frame: Rational) {
     if num <= 0 || den <= 0 || num == den || (num - den).abs().saturating_mul(1000) > den {
         return;
     }
-    let t = |x: Tick| Tick((x.0 as i128).saturating_mul(num).saturating_add(den / 2).div_euclid(den).clamp(i64::MIN as i128, i64::MAX as i128) as i64);
+    // The times arrive already cut to whole ticks, so a time that belongs on a frame can come
+    // out a tick or two beside it: within two ticks of a frame's start it is put on the frame.
+    let frame_ticks = comp.frame_rate.frame_duration().0.max(1);
+    let t = |x: Tick| {
+        let v = (x.0 as i128).saturating_mul(num).saturating_add(den / 2).div_euclid(den).clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+        let past = v.rem_euclid(frame_ticks);
+        Tick(if past <= 2 {
+            v - past
+        } else if frame_ticks - past <= 2 {
+            v.saturating_add(frame_ticks - past)
+        } else {
+            v
+        })
+    };
     comp.duration = t(comp.duration);
     comp.work_area = (t(comp.work_area.0), t(comp.work_area.1));
     for l in &mut comp.layers {
