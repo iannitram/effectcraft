@@ -631,7 +631,8 @@ fn build_layers(cx: &mut Ctx, project: &mut Project, comp: &mut Comp, raw: &RawC
         }
         match src {
             LayerSource::Text => {
-                let read = group(&rl.props, "ADBE Text Properties").and_then(|g| {
+                let text = group(&rl.props, "ADBE Text Properties");
+                let read = text.and_then(|g| {
                     g.iter().find_map(|n| match &n.kind {
                         RawKind::Text(blob) if n.match_name == "ADBE Text Document" => crate::text::text_doc(blob),
                         _ => None,
@@ -640,11 +641,19 @@ fn build_layers(cx: &mut Ctx, project: &mut Project, comp: &mut Comp, raw: &RawC
                 match (read, l.props.sub_mut("text").and_then(|t| t.get_mut("sourceText"))) {
                     (Some(read), Some(st)) => {
                         st.value = Value::Text(Box::new(read.doc));
-                        if read.partial {
-                            cx.warn.add("text layer: its text, fonts, sizes, fill colours, tracking, leading, baseline shift, scale and alignment are imported; stroke, box text and animators are not yet");
+                        // Only what this layer has and the import cannot vouch for is named.
+                        if let Some(width) = read.stroke {
+                            cx.warn.add(format!("text layer: its stroke is imported (width {width}) from settings no picture has confirmed yet: check it"));
+                        }
+                        if read.frame != Some(0) {
+                            cx.warn.add("text layer: it may be box text (its frame is not marked as point text): laid out as point text");
                         }
                     }
                     _ => cx.warn.add("text layer: its text could not be read (placeholder text)"),
+                }
+                let animators = text.and_then(|g| group(g, "ADBE Text Animators")).map_or(0, <[RawNode]>::len);
+                if animators > 0 {
+                    cx.warn.add(format!("text layer: {animators} text animator(s) are not imported"));
                 }
             }
             LayerSource::Shape => cx.warn.add("shape layer: its contents are not imported yet"),

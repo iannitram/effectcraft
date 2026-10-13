@@ -14,12 +14,19 @@
 //!   tracking, `/9` the baseline shift in pixels (positive is up; measured: a title with 62.0
 //!   here sits that much higher in its reference export than without it), and `/53 /0 /1` the
 //!   fill colour as alpha, red, green, blue;
+//! - the stroke, from the same character style: `/57` whether it is on, `/54 /0 /1` its colour
+//!   (stored as the fill's), `/63` its width in pixels and `/58` whether the fill is drawn
+//!   first, so that the stroke lies over it. Found by their place and their values across 65
+//!   style runs (the colour sits beside the fill's in the same form; the width is 1.0 where
+//!   nothing was set); in none of them is a stroke wide enough to see, so no picture has
+//!   confirmed them;
 //! - the paragraph runs: `/1 /1 #0 /0 /5 /0 #n`, of whose paragraph style `/0 /0 /5` the key
 //!   `/0` is the alignment: 0 left, 1 right, 2 centre (across 39 paragraphs measured: every
 //!   title that sits centred in its reference export has 2).
 //!
-//! Everything else in the document (stroke, box text, the other paragraph
-//! settings) is left at EffectCraft's defaults for now; the importer says so.
+//! Everything else in the document (box text, the other paragraph settings) is left at
+//! EffectCraft's defaults for now. The number at `/1 /1 #0 /1 /0 #0 /0` is 0 in every
+//! point-text title measured; the importer names a layer where it is anything else.
 
 use effectcraft_keyframe::{Justify, StyleRun, TextDoc};
 
@@ -217,9 +224,11 @@ impl Parser<'_> {
 #[derive(Clone, Debug)]
 pub(crate) struct ReadText {
     pub doc: TextDoc,
-    /// The document has settings this reader left at their defaults (always true for now:
-    /// tracking, leading, stroke and paragraph settings are not read).
-    pub partial: bool,
+    /// A stroke is switched on for some of the text: its width in pixels (the widest).
+    pub stroke: Option<f64>,
+    /// The number at `/1 /1 #0 /1 /0 #0 /0`, which is 0 in every point-text title measured.
+    /// Anything else may be box text, which is then laid out as point text.
+    pub frame: Option<i64>,
 }
 
 /// Read a text layer's document. `None` when no text can be found in it.
@@ -239,6 +248,8 @@ pub(crate) fn text_doc(blob: &[u8]) -> Option<ReadText> {
     let mut units_seen = 0usize;
     let chars: Vec<char> = raw.chars().collect();
     let mut char_at = 0usize;
+    let mut stroke: Option<f64> = None;
+    let mut fill_first: Option<bool> = None;
     for run in story.path(&["6", "0"]).map(Cos::items).unwrap_or(&[]) {
         let units = run.get("1").and_then(Cos::num).filter(|n| *n >= 0.0).map(|n| n as usize).unwrap_or(0).min(units_total.saturating_sub(units_seen));
         units_seen += units;
@@ -290,6 +301,25 @@ pub(crate) fn text_doc(blob: &[u8]) -> Option<ReadText> {
                 style.fill = [ch(1), ch(2), ch(3), ch(0)];
             }
         }
+        // Stroke: on or off, its colour (stored as the fill's is) and its width in pixels.
+        if let Some(on) = feat.get("57").and_then(Cos::bool) {
+            style.apply_stroke = on;
+        }
+        if style.apply_stroke {
+            if let Some(c) = feat.path(&["54", "0", "1"]) {
+                let ch = |i: usize| c.at(i).and_then(Cos::num).unwrap_or(1.0).clamp(0.0, 1.0) as f32;
+                if c.items().len() >= 4 {
+                    style.stroke = [ch(1), ch(2), ch(3), ch(0)];
+                }
+            }
+            if let Some(w) = feat.get("63").and_then(Cos::num).filter(|w| w.is_finite() && *w >= 0.0) {
+                style.stroke_width = w.min(10_000.0);
+            }
+            if len > 0 {
+                stroke = Some(stroke.unwrap_or(0.0f64).max(style.stroke_width));
+                fill_first = fill_first.or(feat.get("58").and_then(Cos::bool));
+            }
+        }
         if len > 0 {
             runs.push(StyleRun { len, style });
         }
@@ -312,7 +342,12 @@ pub(crate) fn text_doc(blob: &[u8]) -> Option<ReadText> {
         Some(2) => Justify::Center,
         _ => Justify::Left,
     };
-    Some(ReadText { doc, partial: true })
+    // With a stroke on, which of the two is drawn on top.
+    if let Some(first) = fill_first {
+        doc.stroke_over_fill = first;
+    }
+    let frame = root.path(&["1", "1", "#0", "1", "0", "#0", "0"]).and_then(Cos::num).map(|n| n.round() as i64);
+    Some(ReadText { doc, stroke, frame })
 }
 
 #[cfg(test)]
@@ -357,6 +392,30 @@ pub(crate) mod tests {
         // Beside the story, the frame's mark as every point-text title has it.
         d.extend(b"] >> >> /1 << /0 [ << /0 0 >> ] >> >> ] >>");
         d
+    }
+
+    /// A stroke arrives when it is switched on, with its colour, its width and its order; the
+    /// frame's mark is handed on as it is.
+    #[test]
+    fn stroke_and_the_frames_mark() {
+        let plain = document("Title\r", &[(6, 0, 72.0, [1.0, 1.0, 1.0, 1.0])]);
+        let t = text_doc(&plain).unwrap();
+        assert_eq!((t.stroke, t.frame, t.doc.apply_stroke), (None, Some(0), false));
+        // Switched off, its colour and width stay out of the style.
+        let off = replace(&plain, b"/2 false /3 true", b"/2 false /3 true /54 << /99 /SimplePaint /0 << /0 1 /1 [ 1.0 0.0 0.5 1.0 ] >> >> /57 false /58 false /63 3.5");
+        let t = text_doc(&off).unwrap();
+        assert_eq!((t.stroke, t.doc.apply_stroke, t.doc.stroke_width, t.doc.stroke_over_fill), (None, false, 0.0, true));
+        let on = replace(&off, b"/57 false", b"/57 true");
+        let t = text_doc(&on).unwrap();
+        assert_eq!((t.stroke, t.doc.apply_stroke, t.doc.stroke_width, t.doc.stroke_over_fill), (Some(3.5), true, 3.5, false));
+        assert_eq!(t.doc.stroke, [0.0, 0.5, 1.0, 1.0]);
+        let over = replace(&on, b"/58 false", b"/58 true");
+        assert!(text_doc(&over).unwrap().doc.stroke_over_fill);
+        // A frame marked otherwise, and one with no mark at all.
+        let other = replace(&plain, b"/1 << /0 [ << /0 0 >> ] >>", b"/1 << /0 [ << /0 1 >> ] >>");
+        assert_eq!(text_doc(&other).unwrap().frame, Some(1));
+        let none = replace(&plain, b" /1 << /0 [ << /0 0 >> ] >>", b"");
+        assert_eq!(text_doc(&none).unwrap().frame, None);
     }
 
     #[test]
