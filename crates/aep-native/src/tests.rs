@@ -539,5 +539,32 @@ fn text_layers_bring_their_text() {
     let Value::Text(doc) = &l.props.prop("text/sourceText").unwrap().value else { panic!("not text") };
     assert_eq!((doc.text.as_str(), doc.font.as_str(), doc.size), ("Episode\nTitle", "Title-Bold", 96.0));
     assert_eq!(doc.fill, [0.75, 0.5, 0.25, 1.0]);
-    assert!(r.warnings.iter().any(|w| w.starts_with("text layer: its text, fonts, sizes, fill colours, tracking, leading, baseline shift, scale and alignment are imported")));
+    // Point text with no stroke and no animators: nothing about it needs saying.
+    assert!(!r.warnings.iter().any(|w| w.starts_with("text layer")), "{:?}", r.warnings);
+}
+
+/// A text layer's note names what that layer has: a stroke (imported, unconfirmed), a frame
+/// that is not marked as point text, text animators (not imported).
+#[test]
+fn a_text_layers_notes_name_what_it_has() {
+    let find = |d: &[u8], from: &[u8], to: &[u8]| {
+        let at = d.windows(from.len()).position(|w| w == from).unwrap();
+        [&d[..at], to, &d[at + from.len()..]].concat()
+    };
+    let blob = crate::text::tests::document("Title\r", &[(6, 0, 96.0, [1.0, 1.0, 1.0, 1.0])]);
+    let blob = find(&blob, b"/2 false /3 true", b"/2 false /3 true /57 true /63 2.5");
+    let blob = find(&blob, b"/1 << /0 [ << /0 0 >> ] >>", b"/1 << /0 [ << /0 1 >> ] >>");
+    let btdk = chunk(b"LIST", &[b"btdk".as_slice(), blob.as_slice()].concat());
+    let animators = group(&[tdmn("ADBE Text Animator"), group(&[]), tdmn("ADBE Text Animator"), group(&[])]);
+    let text = group(&[tdmn("ADBE Text Document"), list(b"btds", &[list(b"tdbs", &[tdb4(1, false)]), btdk]), tdmn("ADBE Text Animators"), animators]);
+    let props = group(&[tdmn("ADBE Text Properties"), text]);
+    let layer = list(b"Layr", &[ldta(&L { id: 1, ty: 3, flags: [0, 0, 0x87], ..Default::default() }), chunk(b"Utf8", b"Title"), props]);
+    let comp = list(b"Item", &[idta(4, 30), chunk(b"Utf8", b"Comp"), cdta(1920, 1080, 30), layer]);
+    let (p, r) = run(&file(&[list(b"Fold", &[comp])]));
+    let l = &p.comp(r.main_comp.unwrap()).unwrap().layers[0];
+    let Value::Text(doc) = &l.props.prop("text/sourceText").unwrap().value else { panic!("not text") };
+    assert_eq!((doc.apply_stroke, doc.stroke_width), (true, 2.5));
+    for part in ["its stroke is imported (width 2.5)", "it may be box text", "2 text animator(s) are not imported"] {
+        assert!(r.warnings.iter().any(|w| w.starts_with("text layer") && w.contains(part)), "{part}: {:?}", r.warnings);
+    }
 }

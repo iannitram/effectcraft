@@ -354,7 +354,8 @@ pub(crate) mod tests {
                 .bytes(),
             );
         }
-        d.extend(b"] >> >> >> ] >>");
+        // Beside the story, the frame's mark as every point-text title has it.
+        d.extend(b"] >> >> /1 << /0 [ << /0 0 >> ] >> >> ] >>");
         d
     }
 
