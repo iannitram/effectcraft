@@ -175,3 +175,29 @@ fn key_light() {
         effect_case("ec.keying.keylight", &[screen.clone(), ("view", e(view)), ("screenMatte/screenShrinkGrow", n(1.0)), ("screenMatte/replaceMethod", e(1))]);
     }
 }
+
+/// Colorama with an output cycle other than the hue wheel (a built-in ramp, a custom palette),
+/// composited: the GPU frame has to agree with the CPU's, which has the cycles.
+#[test]
+fn colorama_ramp_and_custom_cycles_match_the_cpu() {
+    use effectcraft_project::BitDepth;
+    use effectcraft_time::Tick;
+
+    use crate::tests::{Scene, check, compare_at, opts};
+    let cases: [Vec<(&str, Value)>; 3] = [
+        vec![("outputCycle/usePresetPalette", e(1))],
+        vec![("outputCycle/usePresetPalette", e(2)), ("outputCycle/cycles", n(2.0))],
+        vec![("outputCycle/usePresetPalette", e(8)), ("outputCycle/palette", Value::Str("0:0,0,0 0.5:0,0,1 0.999985:1,1,1".into()))],
+    ];
+    for vals in &cases {
+        for depth in [BitDepth::Bpc8, BitDepth::Bpc32] {
+            let mut s = Scene::new(depth);
+            let bg = s.solid([0.15, 0.1, 0.2], 97, 61);
+            s.push(bg);
+            let mut l = s.footage(70, 44);
+            s.effect(&mut l, "ec.color.colorama", vals);
+            s.push(l);
+            check(&format!("colorama {vals:?} {depth:?}"), compare_at(&s, opts(), Tick::ZERO), 0.0);
+        }
+    }
+}

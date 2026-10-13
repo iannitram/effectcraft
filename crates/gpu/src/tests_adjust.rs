@@ -119,3 +119,19 @@ fn composite_reads_the_original_adjustment_input_on_gpu() {
         }
     }
 }
+
+/// An adjustment layer with a blending mode other than Normal: the CPU blends the adjusted
+/// picture over what is beneath with that mode, and the GPU frame has to agree.
+#[test]
+fn adjustment_layers_with_a_blending_mode_match_the_cpu() {
+    use effectcraft_color::BlendMode;
+    for mode in [BlendMode::SoftLight, BlendMode::Multiply, BlendMode::Screen] {
+        for depth in [BitDepth::Bpc8, BitDepth::Bpc32] {
+            for masked in [false, true] {
+                let mut s = adjustment_scene(depth, &gpu_stack(), masked);
+                s.p.comp_mut(s.cid).unwrap().layers.iter_mut().find(|l| l.switches.adjustment).unwrap().blend_mode = mode;
+                check(&format!("adjustment {mode:?} {depth:?} masked {masked}"), compare_at(&s, opts(), Tick::ZERO), 0.0);
+            }
+        }
+    }
+}
