@@ -625,7 +625,7 @@ fn build_layers(cx: &mut Ctx, project: &mut Project, comp: &mut Comp, raw: &RawC
                     (Some(read), Some(st)) => {
                         st.value = Value::Text(Box::new(read.doc));
                         if read.partial {
-                            cx.warn.add("text layer: its text, fonts, sizes, fill colours, tracking, leading, scale and alignment are imported; stroke, baseline shift, box text and animators are not yet");
+                            cx.warn.add("text layer: its text, fonts, sizes, fill colours, tracking, leading, baseline shift, scale and alignment are imported; stroke, box text and animators are not yet");
                         }
                     }
                     _ => cx.warn.add("text layer: its text could not be read (placeholder text)"),

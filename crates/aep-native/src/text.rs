@@ -11,12 +11,14 @@
 //!   `/0 /0 /6` its character style, of which `/0` is the font's index, `/1` the size in
 //!   pixels, `/2` and `/3` faux bold and italic, `/4` whether leading is automatic and `/5` the
 //!   leading in pixels, `/6` and `/7` the horizontal and vertical scale (1.0 = 100%), `/8` the
-//!   tracking, and `/53 /0 /1` the fill colour as alpha, red, green, blue;
+//!   tracking, `/9` the baseline shift in pixels (positive is up; measured: a title with 62.0
+//!   here sits that much higher in its reference export than without it), and `/53 /0 /1` the
+//!   fill colour as alpha, red, green, blue;
 //! - the paragraph runs: `/1 /1 #0 /0 /5 /0 #n`, of whose paragraph style `/0 /0 /5` the key
 //!   `/0` is the alignment: 0 left, 1 right, 2 centre (across 39 paragraphs measured: every
 //!   title that sits centred in its reference export has 2).
 //!
-//! Everything else in the document (stroke, baseline shift, box text, the other paragraph
+//! Everything else in the document (stroke, box text, the other paragraph
 //! settings) is left at EffectCraft's defaults for now; the importer says so.
 
 use effectcraft_keyframe::{Justify, StyleRun, TextDoc};
@@ -278,6 +280,10 @@ pub(crate) fn text_doc(blob: &[u8]) -> Option<ReadText> {
         if let Some(t) = feat.get("8").and_then(Cos::num) {
             style.tracking = t.clamp(-100_000.0, 100_000.0);
         }
+        // Baseline shift in pixels, positive raises the text.
+        if let Some(s) = feat.get("9").and_then(Cos::num).filter(|s| s.is_finite()) {
+            style.baseline_shift = s.clamp(-100_000.0, 100_000.0);
+        }
         if let Some(c) = feat.path(&["53", "0", "1"]) {
             let ch = |i: usize| c.at(i).and_then(Cos::num).unwrap_or(1.0).clamp(0.0, 1.0) as f32;
             if c.items().len() >= 4 {
@@ -385,6 +391,12 @@ pub(crate) mod tests {
         let t = text_doc(&styled).unwrap();
         assert_eq!(t.doc.text, "Episode\nTitle");
         assert_eq!((t.doc.justify, t.doc.leading, t.doc.tracking, t.doc.h_scale, t.doc.v_scale), (Justify::Center, Some(90.0), 100.0, 150.0, 50.0));
+        // Baseline shift: none as written, and the document's number when it has one.
+        assert_eq!(t.doc.baseline_shift, 0.0);
+        let raised = replace(&styled, b"/8 100", b"/8 100 /9 62.0");
+        assert_eq!(text_doc(&raised).unwrap().doc.baseline_shift, 62.0);
+        let lowered = replace(&styled, b"/8 100", b"/8 100 /9 -12.5");
+        assert_eq!(text_doc(&lowered).unwrap().doc.baseline_shift, -12.5);
         // Right alignment, and a leading number that does not count while leading is automatic.
         let right = replace(&styled, b"/5 << /0 2 /1 0.0 >>", b"/5 << /0 1 /1 0.0 >>");
         let right = replace(&right, b"/4 false /5 90.0", b"/4 true /5 0.01");
