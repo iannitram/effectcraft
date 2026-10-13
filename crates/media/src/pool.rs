@@ -700,9 +700,14 @@ impl Inner {
                 let rate = footage.frame_rate;
                 let n = Self::frame_count(rate, footage.duration);
                 let i = Self::frame_index(rate, t, n, footage.loop_count);
-                // Middle of the frame in the file's own timing (robust to timestamp rounding).
+                // Just short of the middle of the frame in the file's own timing: robust to
+                // timestamp rounding for a reader that floors the time, and never a tie for one
+                // that rounds it to the nearest timestamp unit. FilmCraft's MP4 and Matroska
+                // readers round since its "nearest timestamp unit" change, and the exact middle
+                // of a frame that is one unit long (timescale 12 at 12 fps, as this app's own
+                // H.264 export writes it) then rounded up to the next frame.
                 let native = footage.native_rate.unwrap_or(rate);
-                let mt = native.tick_of(i) + Tick(native.frame_duration().0 / 2);
+                let mt = native.tick_of(i) + Tick((native.frame_duration().0 - 1).max(0) / 2);
                 Loc { key: key(&footage.path, i), media_t: Some(mt), float }
             }
         }
