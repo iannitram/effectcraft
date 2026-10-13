@@ -21,10 +21,10 @@
 //! layer choosers with their keyframes, plus the private data of Levels, Curves and Colorama
 //! (`settings`). An effect with a setting that could not be carried over is added switched
 //! off, and the setting is named. Text layers bring their text, fonts, sizes, fill colours,
-//! tracking, leading, scale and alignment (`text`).
+//! tracking, leading, baseline shift, scale and alignment (`text`).
 //!
 //! **What is not, yet** (each is listed in [`ImportResult::warnings`] when a project uses it):
-//! other effects' private data and colour keyframes, text stroke, baseline shift, box text
+//! other effects' private data and colour keyframes, text stroke, box text
 //! and animators, shape layer contents, camera and light options, layer styles, expressions,
 //! markers, separated position dimensions, orientation, fractional time stretch.
 //!
