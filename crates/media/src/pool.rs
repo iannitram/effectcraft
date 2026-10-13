@@ -915,8 +915,10 @@ fn read_stereo(src: &SharedSource, s0: i64, frames: usize, rate: u32) -> std::re
     }
     let buf = src.audio(s0.max(0), frames - skip, rate).map_err(|e| e.to_string())?;
     let Some(dst) = skip.checked_mul(2).and_then(|i| out.get_mut(i..)) else { return Ok(out) };
-    let aac = src.info().audio().is_some_and(|a| a.codec.starts_with("AAC"));
-    crate::downmix::downmix_into(&buf.channels, aac, dst);
+    // FilmCraft hands every codec's surround over in WAVE / SMPTE order, AAC included (its
+    // reader reorders AAC's own C-L-R order since FilmCraft issue 721), so no codec needs its
+    // own table here.
+    crate::downmix::downmix_into(&buf.channels, false, dst);
     Ok(out)
 }
 

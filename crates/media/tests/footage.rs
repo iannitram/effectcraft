@@ -477,7 +477,8 @@ fn dnxhd_mxf() -> Option<PathBuf> {
 fn mxf_is_importable() {
     assert!(effectcraft_media::is_importable(Path::new("/media/A001C003.mxf")));
     assert!(effectcraft_media::is_importable(Path::new("/media/A001C003.MXF")));
-    assert!(!effectcraft_media::is_importable(Path::new("/media/A001C003.avi")), "no AVI demuxer yet");
+    // AVI too, since FilmCraft's AVI reader (uncompressed AVI: `tests/avi_uncompressed.rs`).
+    assert!(effectcraft_media::is_importable(Path::new("/media/A001C003.avi")));
 }
 
 #[test]
