@@ -488,8 +488,12 @@ fn cc_spotlight_cone_angle_and_light_shadow_intensity() {
     let g = effect_of(&p, &r, 0, 0);
     assert!(g.enabled, "{:?}", r.warnings);
     let keys = &g.prop("coneAngle").unwrap().keys;
-    assert_eq!(keys.len(), 2);
-    assert_eq!((&keys[0].value, &keys[1].value), (&Value::Scalar((12.8 * scale).min(89.9)), &Value::Scalar(89.9)));
+    // The cone keeps its pace up to our widest (a keyframe where it gets there), then holds.
+    assert_eq!(keys.len(), 3);
+    assert_eq!((&keys[0].value, &keys[1].value, &keys[2].value), (&Value::Scalar(12.8 * scale), &Value::Scalar(89.9), &Value::Scalar(89.9)));
+    let part = (89.9 - 12.8 * scale) / (143.9 * scale - 12.8 * scale);
+    let second = Tick::from_units(1, 1);
+    assert!((keys[1].time.0 as f64 / second.0 as f64 - part).abs() < 1e-9 && keys[2].time == second, "{:?} {:?}", keys[1].time, keys[2].time);
     assert_eq!(num(&g, "intensity"), 100.0);
     assert!(said(&r, "Cone Angle goes past") && said(&r, "Intensity above 100% is held at 100%"), "{:?}", r.warnings);
     // Left alone: After Effects' default cone, and nothing to say about holding anything.

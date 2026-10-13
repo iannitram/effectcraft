@@ -384,12 +384,37 @@ fn hold(prop: &mut Property, lo: f64, hi: f64) -> bool {
     cut
 }
 
+/// Where a keyframed number crosses `at` on a straight stretch between two keyframes, add a
+/// keyframe there, so that holding the number at `at` afterwards keeps its pace up to the
+/// crossing instead of spreading a shorter climb over the whole stretch.
+fn key_at_crossing(prop: &mut Property, at: f64) {
+    let mut added: Vec<Keyframe> = Vec::new();
+    for pair in prop.keys.windows(2) {
+        let [k0, k1] = pair else { continue };
+        let (Value::Scalar(a), Value::Scalar(b)) = (&k0.value, &k1.value) else { continue };
+        let straight = matches!(k0.out_interp, Interp::Linear) && matches!(k1.in_interp, Interp::Linear);
+        if !straight || (a - at) * (b - at) >= 0.0 {
+            continue;
+        }
+        let t = k0.time.0 + ((k1.time.0 - k0.time.0) as f64 * (at - a) / (b - a)).round() as i64;
+        if t > k0.time.0 && t < k1.time.0 {
+            added.push(Keyframe::new(effectcraft_time::Tick(t), Value::Scalar(at)));
+        }
+    }
+    if !added.is_empty() {
+        prop.keys.extend(added);
+        prop.keys.sort_by_key(|k| k.time);
+    }
+}
+
 /// CC Spotlight's two settings that do not mean here what they mean in After Effects.
 ///
 /// **Cone Angle.** After Effects accepts up to 360, EffectCraft up to 89.9 (it takes the
 /// number for the angle between the light's axis and the cone's edge). An angle past our
 /// widest is held there with a note instead of leaving the effect switched off: at that
 /// width the whole layer in front of the light is lit, which is what such a project shows.
+/// A cone keyed open past it keeps its pace up to our widest (a keyframe is added where it
+/// gets there).
 ///
 /// **Intensity over 100% in the Light Shadow mode** (After Effects' default mode, and the
 /// one our "Light" stands for). Measured on six published titles lit this way at 123%: the
@@ -408,6 +433,7 @@ fn spotlight(fg: &mut PropGroup, params: &[RawNode], defs: &[RawParamDef], out: 
         };
         if read {
             out.unread.retain(|u| norm(u) != "cone angle");
+            key_at_crossing(&mut trial, SPOT_CONE.1);
             if hold(&mut trial, SPOT_CONE.0, SPOT_CONE.1) {
                 out.notes.push(format!("its Cone Angle goes past EffectCraft's widest and is held at {}°", SPOT_CONE.1));
             }
