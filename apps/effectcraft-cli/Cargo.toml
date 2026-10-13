@@ -23,3 +23,4 @@ effectcraft-time = { workspace = true }
 serde_json = { workspace = true }
 image = { workspace = true }
 cpu-time = "1"
+craft-log = { path = "../../crates/craft-log" } # ours (self-logging)

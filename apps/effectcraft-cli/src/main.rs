@@ -41,6 +41,7 @@
 
 use std::io::Write;
 
+mod self_logging; // ours
 mod template;
 
 use effectcraft_automation::tools::{self, Reply};
@@ -273,6 +274,7 @@ fn main() {
         say!("{USAGE}");
         std::process::exit(if raw.is_empty() { 2 } else { 0 });
     }
+    self_logging::install(); // ours
     let mut args = match Args::parse(raw) {
         Ok(a) => a,
         Err(e) => fail_usage(&e),
@@ -283,7 +285,10 @@ fn main() {
     }
     let cmd = args.pos.remove(0);
     match run(&cmd, &args, json_out) {
-        Ok(()) if stdout_broken() => std::process::exit(1),
+        Ok(()) if stdout_broken() => {
+            self_logging::failed("standard output could not be written"); // ours
+            std::process::exit(1)
+        }
         Ok(()) => {}
         Err(Failure::Usage(e)) => fail_usage(&e),
         Err(Failure::Error(e)) => {
@@ -291,6 +296,7 @@ fn main() {
                 say!("{}", json!({"error": e}));
             }
             note!("effectcraft-cli {cmd}: {e}");
+            self_logging::failed(&format!("effectcraft-cli {cmd}: {e}")); // ours
             std::process::exit(1);
         }
     }
@@ -298,6 +304,7 @@ fn main() {
 
 fn fail_usage(e: &str) -> ! {
     note!("effectcraft-cli: {e}\n{USAGE}");
+    self_logging::failed(&format!("effectcraft-cli: {e}")); // ours
     std::process::exit(2)
 }
 
@@ -416,6 +423,7 @@ fn script_cmd(args: &Args, json_out: bool) -> Result<(), Failure> {
         };
         let msg = format!("{}{pos}: {}", e["file"].as_str().unwrap_or(&name), e["message"].as_str().unwrap_or("script error"));
         if json_out {
+            self_logging::failed(&msg); // ours
             std::process::exit(1);
         }
         return Err(Failure::Error(msg));
