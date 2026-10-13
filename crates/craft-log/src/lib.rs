@@ -12,6 +12,9 @@
 //! - a command-line program: [`cli::install`], one shared `<log dir>/<app>-cli.log` appended to by
 //!   every run, and [`cli::report_failure`] before exiting with an error, which prints
 //!   `log: <path>` as the last line on standard error;
+//! - a panic: [`crash::install_hook`] after the app's own hook, which writes
+//!   `<dir>/crash-<UTC stamp>.txt` (the build line, the panic, a backtrace, the last 200 log
+//!   lines) and ends the panic's output with `crash: <path>`;
 //! - a test: `let _log = craft_log::testing::capture();`, which prints the test's last log lines
 //!   when it fails.
 //!
@@ -24,6 +27,7 @@
 
 pub mod cli;
 pub mod collapse;
+pub mod crash;
 pub mod filter;
 pub mod line;
 pub mod report;
