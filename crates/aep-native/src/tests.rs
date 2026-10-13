@@ -57,13 +57,18 @@ fn idta(ty: u16, id: u32) -> Vec<u8> {
 
 /// A composition at 30 fps (time scale 30 000) lasting `frames` frames.
 fn cdta(w: u16, h: u16, frames: i32) -> Vec<u8> {
+    cdta_scale(w, h, frames, 30_000)
+}
+
+/// A composition whose frame lasts 1000 units of `scale` (23 976 for 23.976 fps), `frames` long.
+fn cdta_scale(w: u16, h: u16, frames: i32, scale: u32) -> Vec<u8> {
     let mut d = vec![0u8; 204];
     put(&mut d, 4, &1000u32.to_be_bytes());
-    put(&mut d, 8, &30_000u32.to_be_bytes());
+    put(&mut d, 8, &scale.to_be_bytes());
     put(&mut d, 36, &(-1i32).to_be_bytes());
     put(&mut d, 40, &600u32.to_be_bytes());
     put(&mut d, 44, &(frames * 1000).to_be_bytes());
-    put(&mut d, 48, &30_000u32.to_be_bytes());
+    put(&mut d, 48, &scale.to_be_bytes());
     put(&mut d, 140, &w.to_be_bytes());
     put(&mut d, 142, &h.to_be_bytes());
     put(&mut d, 144, &1u32.to_be_bytes());
@@ -83,15 +88,17 @@ struct L {
     matte: u32,
     ty: u32,
     parent: u32,
+    /// The time scale of start, in and out.
+    scale: u32,
 }
 
 impl Default for L {
     fn default() -> Self {
-        L { id: 1, source: 0, start: 0, inp: 0, out: 30_000, stretch: (1, 1), flags: [0, 0, 0x07], blend: 2, matte: 0, ty: 0, parent: 0 }
+        L { id: 1, source: 0, start: 0, inp: 0, out: 30_000, stretch: (1, 1), flags: [0, 0, 0x07], blend: 2, matte: 0, ty: 0, parent: 0, scale: 30_000 }
     }
 }
 
-/// Layer data with times in a 30 000 time scale.
+/// Layer data with times in a 30 000 time scale (or `scale`).
 fn ldta(l: &L) -> Vec<u8> {
     let mut d = vec![0u8; 160];
     put(&mut d, 0, &l.id.to_be_bytes());
@@ -100,7 +107,7 @@ fn ldta(l: &L) -> Vec<u8> {
     put(&mut d, 108, &l.stretch.1.to_be_bytes());
     for (at, v) in [(12, l.start), (20, l.inp), (28, l.out)] {
         put(&mut d, at, &v.to_be_bytes());
-        put(&mut d, at + 4, &30_000u32.to_be_bytes());
+        put(&mut d, at + 4, &l.scale.to_be_bytes());
     }
     put(&mut d, 37, &l.flags);
     put(&mut d, 40, &l.source.to_be_bytes());
@@ -348,6 +355,30 @@ fn layers_timing_switches_and_links() {
     assert_eq!(grade.blend_mode, effectcraft_color::BlendMode::SoftLight);
     assert_eq!(grade.label, effectcraft_color::Label::Green);
     assert!(!r.warnings.iter().any(|w| w.contains("time stretch")), "{:?}", r.warnings);
+}
+
+/// A 23.976 fps composition stores its times for 23976/1000 frames a second and runs here at
+/// 24000/1001. Carried over by seconds, a layer that starts on frame 34 would start a hair
+/// after it and show one frame late; carried over by frame count it starts on the frame.
+#[test]
+fn a_23_976_composition_keeps_its_times_on_its_frames() {
+    let solids = list(b"Item", &[idta(1, 10), chunk(b"Utf8", b"Solids"), list(b"Sfdr", &[solid_item(11, 640, 360, [1.0, 1.0, 0.5, 0.25], "Solid")])]);
+    let opacity = group(&[tdmn("ADBE Opacity"), list(b"tdbs", &[tdb4(1, false), key_list(48, &[key1(0, 2, 0.0), key1(30_000, 3, 1.0)])])]);
+    let shot = L { id: 1, source: 11, start: 34_000, inp: 0, out: 48_000, scale: 23_976, ..Default::default() };
+    let layer = list(b"Layr", &[ldta(&shot), chunk(b"Utf8", b"Shot"), group(&[tdmn("ADBE Transform Group"), opacity])]);
+    let comp = list(b"Item", &[idta(4, 30), chunk(b"Utf8", b"Comp"), cdta_scale(1920, 1080, 504, 23_976), layer]);
+    let (p, r) = run(&file(&[list(b"Fold", &[solids, comp])]));
+    let c = p.comp(r.main_comp.unwrap()).unwrap();
+    let rate = effectcraft_time::FrameRate::new(24_000, 1001);
+    assert_eq!(c.frame_rate, rate);
+    assert_eq!(c.duration, rate.tick_of(504));
+    let l = &c.layers[0];
+    assert_eq!((l.start_time, l.in_point, l.out_point), (rate.tick_of(34), rate.tick_of(34), rate.tick_of(82)));
+    // A key one second into the layer on the file's clock is 23.976 frames in: just short of a second here.
+    let keys = &l.props.prop("transform/opacity").unwrap().keys;
+    assert_eq!(keys[0].time, Tick::ZERO);
+    assert_eq!(keys[1].time, Tick((Tick::from_units(1, 1).0 as i128 * 23_999_976 / 24_000_000) as i64));
+    // A 30 fps composition's times are left as they are (the sample project's tests).
 }
 
 /// Time stretch is a fraction (numerator @8, denominator @108 of the layer record): 70% and
