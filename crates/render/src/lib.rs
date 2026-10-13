@@ -2003,6 +2003,17 @@ impl<'a> Renderer<'a> {
         if adjusted.img.width != canvas.width || adjusted.img.height != canvas.height {
             return;
         }
+        // A blending mode other than Normal: the adjusted picture, cut to the footprint, goes
+        // over the comp below with that mode, as an ordinary layer would.
+        if layer.blend_mode != BlendMode::Normal {
+            adjusted.img.data.par_iter_mut().zip(matte.data.par_iter()).for_each(|(a, m)| {
+                for c in a.iter_mut() {
+                    *c *= m[3];
+                }
+            });
+            canvas.blend_from(&adjusted.img, layer.blend_mode, opacity, layer.id.0 as u32);
+            return;
+        }
         canvas.data.par_iter_mut().zip(adjusted.img.data.par_iter()).zip(matte.data.par_iter()).for_each(|((c, a), m)| {
             let k = m[3] * opacity;
             for i in 0..4 {
