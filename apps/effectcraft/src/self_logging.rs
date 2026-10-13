@@ -69,7 +69,9 @@ pub fn start(backends: Option<eframe::wgpu::Backends>) {
 pub fn window_check(cc: &eframe::CreationContext<'_>, opened: Option<WindowGeometry>) {
     let asked = opened.map_or(window::DEFAULT_SIZE, |g| g.size);
     let asked_max = opened.is_some_and(|g| g.maximized);
-    let window = cc.winit_window().cloned();
+    // held weakly: the closure lives as long as the egui context, and a strong reference to the
+    // window kept it (and the program) alive after it was closed
+    let window = cc.winit_window().map(std::sync::Arc::downgrade);
     if window.is_none() {
         log::info!("window: no window handle from eframe; the size it got is unknown");
     }
@@ -81,7 +83,8 @@ pub fn window_check(cc: &eframe::CreationContext<'_>, opened: Option<WindowGeome
             if ctx.cumulative_frame_nr() < SIZE_CHECK_FRAME || done.swap(true, Ordering::Relaxed) {
                 return;
             }
-            let Some(w) = &window else { return };
+            // no handle, or the window is gone: nothing to say
+            let Some(w) = window.as_ref().and_then(std::sync::Weak::upgrade) else { return };
             let (inner, scale) = (w.inner_size(), w.scale_factor());
             let l = inner.to_logical::<f64>(scale);
             let got = [l.width as f32, l.height as f32];
