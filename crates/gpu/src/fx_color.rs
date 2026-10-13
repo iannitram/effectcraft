@@ -110,6 +110,12 @@ fn point(e: &mut Enc, id: &str, ctx: &EffectCtx, b: GBuf) -> Option<GBuf> {
             if !smooth {
                 return None;
             }
+            // UNTESTED, NOT EVEN COMPILED (written 2026-10-13 with no GPU available): the shader
+            // draws the hue wheel only, so every other output cycle (the built-in ramps, a custom
+            // palette) runs on the CPU, which has the cycles and keeps white at the cycle's end.
+            if pr.e("outputCycle/usePresetPalette") != 0 {
+                return None;
+            }
             p.u[0] = [5, pr.e("inputPhase/mode"), smooth as u32, 0];
             p.f[0] = [pr.f("outputCycle/cycles").max(0.0) as f32, f("inputPhase/phaseShift") / 360.0, 1.0 - f("blend") / 100.0, 0.0];
         }
