@@ -40,9 +40,9 @@ fn demo(s: &mut Session, _: &Value) -> Result<Value> {
 pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_p(p, "path").ok_or_else(|| bad("file.open", "missing `path`"))?;
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("cannot read {path}: {e}")))?;
-    // An After Effects project is imported into a new untitled project (`effectcraft-aep`).
-    if effectcraft_aep::is_aep(&bytes) {
-        return super::aep::open(s, path, &bytes);
+    // An After Effects project is imported into a new untitled project (`effectcraft-aep-native`).
+    if effectcraft_aep_native::is_aep(&bytes) {
+        return super::aep_native::open(s, path, &bytes);
     }
     let text = String::from_utf8(bytes).map_err(|_| EngineError::Other("not a text project file".into()))?;
     // XML copies (File ▸ Save a Copy As XML…) open like the JSON project.
@@ -378,6 +378,19 @@ fn prepare_import(s: &mut Session, p: &Value) -> Result<PendingImport> {
     let mut comps = vec![];
     let mut items = vec![];
     let mut errors = vec![];
+    // After Effects projects among the files are imported as projects, not probed as media.
+    let (aep_paths, media_paths): (Vec<String>, Vec<String>) = paths.into_iter().partition(|p| super::aep_native::is_aep_path(p));
+    paths = media_paths;
+    for path in &aep_paths {
+        match super::aep_native::import_file(s, path) {
+            Ok(v) => {
+                let ids = |k: &str| v.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect::<Vec<u64>>()).unwrap_or_default();
+                comps.extend(ids("comps"));
+                items.extend(ids("items"));
+            }
+            Err(e) => errors.push(e.to_string()),
+        }
+    }
     if let Some(retain) = retain {
         let mut rest = vec![];
         for path in paths {

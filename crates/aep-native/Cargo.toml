@@ -1,6 +1,6 @@
 [package]
-name = "effectcraft-aep"
-description = "After Effects project (.aep) import: folders, compositions, solids, footage links, layers with timing, switches, blend modes, parenting and track mattes, transform keyframes and masks"
+name = "effectcraft-aep-native"
+description = "After Effects project (.aep) reader in Rust, no external converter: folders, compositions, solids, footage links, layers with timing, switches, blend modes, parenting and track mattes, transform keyframes and masks"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

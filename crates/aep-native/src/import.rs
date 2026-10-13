@@ -330,6 +330,21 @@ fn source(cx: &mut Ctx, project: &Project, comp: &Comp, l: &RawLayer) -> (LayerS
     }
 }
 
+/// How many properties below carry an expression.
+fn expressions(nodes: &[RawNode], depth: usize) -> usize {
+    if depth > 64 {
+        return 0;
+    }
+    nodes
+        .iter()
+        .map(|n| match &n.kind {
+            RawKind::Prop(p) | RawKind::Shape { prop: p, .. } => usize::from(p.expression.is_some()),
+            RawKind::Group(g) | RawKind::Effect { params: g, .. } | RawKind::Mask { props: g, .. } => expressions(g, depth + 1),
+            _ => 0,
+        })
+        .sum()
+}
+
 fn group<'a>(nodes: &'a [RawNode], match_name: &str) -> Option<&'a [RawNode]> {
     nodes.iter().find(|n| n.match_name == match_name).and_then(|n| match &n.kind {
         RawKind::Group(g) => Some(g.as_slice()),
@@ -365,9 +380,6 @@ fn transform(cx: &mut Ctx, raw: &[RawNode], tr: &mut PropGroup, three_d: bool) {
         // Cameras and lights keep the point of interest where other layers keep the anchor.
         let target = if id == "anchor" && tr.get("anchor").is_none() { "poi" } else { id };
         if let Some(prop) = tr.get_mut(target) {
-            if p.expression.is_some() {
-                cx.warn.add(format!("expression on {} not imported", n.match_name));
-            }
             apply(prop, p, scale, conv);
         }
     }
@@ -431,8 +443,7 @@ fn masks(cx: &mut Ctx, ids: &mut Ids, raw: &[RawNode], g: &mut PropGroup, size: 
                 (RawKind::Shape { prop, shapes }, "ADBE Mask Shape") => {
                     let Some(target) = mg.get_mut("path") else { continue };
                     if prop.keys.len() > 1 && prop.keys.len() == shapes.len() {
-                        let mut keys: Vec<Keyframe> =
-                            prop.keys.iter().zip(shapes).map(|(k, s)| key(k, Value::Path(shape_path(s, size)), 1.0, false)).collect();
+                        let mut keys: Vec<Keyframe> = prop.keys.iter().zip(shapes).map(|(k, s)| key(k, Value::Path(shape_path(s, size)), 1.0, false)).collect();
                         keys.sort_by_key(|k| k.time);
                         keys.dedup_by_key(|k| k.time);
                         if let Some(first) = keys.first() {
@@ -533,7 +544,13 @@ fn build_layers(cx: &mut Ctx, project: &mut Project, comp: &mut Comp, raw: &RawC
         l.switches.three_d = rl.three_d || l.switches.three_d;
         l.switches.solo = rl.solo;
         l.switches.guide = rl.guide;
-        l.switches.quality = if rl.quality == 0 { Quality::Wireframe } else if rl.quality == 1 { Quality::Draft } else { Quality::Best };
+        l.switches.quality = if rl.quality == 0 {
+            Quality::Wireframe
+        } else if rl.quality == 1 {
+            Quality::Draft
+        } else {
+            Quality::Best
+        };
         if src.is_av() || matches!(src, LayerSource::Text | LayerSource::Shape) {
             match blend(rl.blend) {
                 Some((mode, sure)) => {
@@ -546,7 +563,23 @@ fn build_layers(cx: &mut Ctx, project: &mut Project, comp: &mut Comp, raw: &RawC
             }
         }
         match src {
-            LayerSource::Text => cx.warn.add("text layer: its text, font and style are not imported yet (placeholder text)"),
+            LayerSource::Text => {
+                let read = group(&rl.props, "ADBE Text Properties").and_then(|g| {
+                    g.iter().find_map(|n| match &n.kind {
+                        RawKind::Text(blob) if n.match_name == "ADBE Text Document" => crate::text::text_doc(blob),
+                        _ => None,
+                    })
+                });
+                match (read, l.props.sub_mut("text").and_then(|t| t.get_mut("sourceText"))) {
+                    (Some(read), Some(st)) => {
+                        st.value = Value::Text(Box::new(read.doc));
+                        if read.partial {
+                            cx.warn.add("text layer: its text, fonts, sizes and fill colours are imported; tracking, leading, stroke, alignment and animators are not yet");
+                        }
+                    }
+                    _ => cx.warn.add("text layer: its text could not be read (placeholder text)"),
+                }
+            }
             LayerSource::Shape => cx.warn.add("shape layer: its contents are not imported yet"),
             LayerSource::Camera => cx.warn.add("camera: its options are not imported yet"),
             LayerSource::Light { .. } => cx.warn.add("light: its type and options are not imported yet"),
@@ -587,6 +620,9 @@ fn build_layers(cx: &mut Ctx, project: &mut Project, comp: &mut Comp, raw: &RawC
                 ("ADBE Marker", RawKind::Prop(p)) if !p.keys.is_empty() => cx.warn.add("layer markers not imported"),
                 _ => {}
             }
+        }
+        for _ in 0..expressions(&rl.props, 0) {
+            cx.warn.add("expression not imported (the property keeps its value or keyframes)");
         }
         project.next_id = next;
         pending.push((l.id, rl.parent, rl.matte, above));

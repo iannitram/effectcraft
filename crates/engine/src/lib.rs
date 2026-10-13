@@ -1106,6 +1106,8 @@ mod tests;
 #[cfg(test)]
 mod tests_3d;
 #[cfg(test)]
+mod tests_aep_native;
+#[cfg(test)]
 mod tests_anim_presets;
 #[cfg(test)]
 mod tests_anim_tools;

@@ -277,9 +277,11 @@ fn read_footage(pin: &Chunk) -> RawFootage {
         f.solid = Some(RawSolid { color: [ch(1), ch(2), ch(3)], name: text_field(opti.get(26..).unwrap_or(&[])) });
         return f;
     }
-    f.path = pin.list(b"Als2").and_then(|l| l.first(b"alas")).and_then(|a| json_string(a.data, "fullpath")).or_else(|| {
-        pin.list(b"Alas").and_then(|l| l.first(b"alas")).and_then(|a| legacy_alias_path(a.data))
-    });
+    f.path = pin
+        .list(b"Als2")
+        .and_then(|l| l.first(b"alas"))
+        .and_then(|a| json_string(a.data, "fullpath"))
+        .or_else(|| pin.list(b"Alas").and_then(|l| l.first(b"alas")).and_then(|a| legacy_alias_path(a.data)));
     f
 }
 
@@ -434,7 +436,20 @@ fn read_prop(tdbs: &Chunk) -> RawProp {
     let spatial = u8_at(b, 5) & 0x08 != 0;
     let scale = u32_at(b, 12) as i64;
     let value = tdbs.first(b"cdat").map(|c| (0..dims).filter(|i| c.data.len() >= (i + 1) * 8).map(|i| f64_at(c.data, i * 8)).collect()).unwrap_or_default();
-    let expression = tdbs.kids.iter().filter(|k| k.is(b"Utf8")).map(|k| String::from_utf8_lossy(k.data).into_owned()).find(|s| !s.trim().is_empty());
+    // An expression: an `expr` chunk in saves up to After Effects 7, a `Utf8` chunk since.
+    let expression = tdbs
+        .kids
+        .iter()
+        .filter_map(|k| {
+            if k.is(b"expr") {
+                Some(text_field(k.data))
+            } else if k.is(b"Utf8") {
+                Some(String::from_utf8_lossy(k.data).into_owned())
+            } else {
+                None
+            }
+        })
+        .find(|s| !s.trim().is_empty());
     let mut keys = Vec::new();
     if let Some(list) = tdbs.list(b"list")
         && let (Some(head), Some(data)) = (list.first(b"lhd3"), list.first(b"ldat"))
@@ -494,12 +509,8 @@ fn read_key(kf: &[u8], dims: usize, spatial: bool, scale: i64) -> RawKey {
 fn read_shape(shap: &Chunk) -> RawShape {
     let h = shap.first(b"shph").map(|c| c.data).unwrap_or(&[]);
     // shph: flags u8 @3 (bit 3: open path), bounding box as four f32 @4.
-    let mut s = RawShape {
-        closed: u8_at(h, 3) & 0x08 == 0,
-        top_left: [f32_at(h, 4), f32_at(h, 8)],
-        bottom_right: [f32_at(h, 12), f32_at(h, 16)],
-        points: Vec::new(),
-    };
+    let mut s =
+        RawShape { closed: u8_at(h, 3) & 0x08 == 0, top_left: [f32_at(h, 4), f32_at(h, 8)], bottom_right: [f32_at(h, 12), f32_at(h, 16)], points: Vec::new() };
     if let Some(list) = shap.list(b"list")
         && let (Some(head), Some(data)) = (list.first(b"lhd3"), list.first(b"ldat"))
     {

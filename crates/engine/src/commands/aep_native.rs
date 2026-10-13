@@ -1,10 +1,10 @@
-//! Opening and importing After Effects projects (`effectcraft-aep`): File ▸ Open on an `.aep`,
-//! File ▸ Import ▸ After Effects Project…, and an `.aep` among imported files.
+//! Opening and importing After Effects projects (`effectcraft-aep-native`, our own reader: no converter outside the app): File ▸ Open on an `.aep`,
+//! an `.aep` among the files of File ▸ Import, and the command `file.importAepNative`.
 //!
 //! An `.aep` is only ever read. Opened, it becomes an untitled project, so saving asks for a
 //! new `.ecproj` and can never write over the After Effects file.
 
-use effectcraft_aep::{FootageRef, ImportResult};
+use effectcraft_aep_native::{FootageRef, ImportResult};
 use effectcraft_project::{Footage, FootageKind, Project};
 use serde_json::{Value, json};
 
@@ -112,7 +112,7 @@ fn import_into(s: &Session, proj: &mut Project, path: &str, bytes: &[u8]) -> Res
             }
         }
     };
-    let mut res = effectcraft_aep::import(proj, bytes, &mut locate).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let mut res = effectcraft_aep_native::import(proj, bytes, &mut locate).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     unreadable.sort();
     unreadable.dedup();
     res.missing_footage += unreadable.len();
@@ -164,7 +164,7 @@ pub(crate) fn open(s: &mut Session, path: &str, bytes: &[u8]) -> Result<Value> {
     Ok(summary(path, &res))
 }
 
-/// File ▸ Import ▸ After Effects Project…: its items are added to the open project.
+/// An `.aep` given to File ▸ Import: its items are added to the open project.
 pub(crate) fn import_file(s: &mut Session, path: &str) -> Result<Value> {
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("cannot read {path}: {e}")))?;
     let mut proj = (*s.project).clone();
@@ -180,10 +180,10 @@ pub(crate) fn import_file(s: &mut Session, path: &str) -> Result<Value> {
 }
 
 fn import_aep(s: &mut Session, p: &Value) -> Result<Value> {
-    let path = str_p(p, "path").ok_or_else(|| bad("file.importAep", "missing `path`"))?.to_string();
+    let path = str_p(p, "path").ok_or_else(|| bad("file.importAepNative", "missing `path`"))?.to_string();
     import_file(s, &path)
 }
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![cmd!("file.importAep", "After Effects Project...", ["File", "Import"], None, "{path (.aep)}", always, import_aep)]
+    vec![cmd!("file.importAepNative", "Import After Effects Project (Built-in Reader)", [], None, "{path (.aep)}", always, import_aep)]
 }

@@ -1,9 +1,12 @@
 //! After Effects project (`.aep`) import.
 //!
-//! Worked out clean-room: from the public RIFF container rules, from what projects saved by
-//! After Effects 6.5 through 2025 contain, and from After Effects' documented match names. No
-//! Adobe code, no other reader's source. Field positions are written down where they are read
-//! ([`read`]); a field this crate does not understand is reported, not guessed.
+//! Where the format knowledge comes from, stated exactly: the RIFF container rules; the chunk
+//! names and the broad layout of the property tree as the community has publicly described
+//! them (After Effects publishes no specification); After Effects' documented match names; and
+//! measurements on projects saved by After Effects 6.5 through 2025, which is where every
+//! field position used here was checked. No Adobe code was read, and no other reader's source
+//! code (py-aep and the like) was read or ported. Field positions are written down where they
+//! are read ([`read`]); a field this crate does not understand is reported, not guessed.
 //!
 //! **What is imported** ([`import`]): folders, compositions (size, frame rate, duration, work
 //! area, pixel aspect), solids, linked files (found by the caller, or kept as missing footage
@@ -13,8 +16,8 @@
 //! (mode, inverted, path with keyframes, feather, opacity, expansion).
 //!
 //! **What is not, yet** (each is listed in [`ImportResult::warnings`] when a project uses it):
-//! effect settings (effects are added switched off), text content and style, shape layer
-//! contents, camera and light options, layer styles, expressions, markers, audio levels,
+//! effect settings (effects are added switched off), text settings beyond the text itself, its
+//! fonts, sizes and fill colours, shape layer contents, camera and light options, layer styles, expressions, markers, audio levels,
 //! separated position dimensions, orientation, fractional time stretch.
 //!
 //! Keyframe times in the file are layer time, which is EffectCraft's convention too.
@@ -25,6 +28,7 @@ mod effects_table;
 mod import;
 pub mod read;
 pub mod rifx;
+mod text;
 
 pub use import::{FootageRef, ImportResult, import};
 

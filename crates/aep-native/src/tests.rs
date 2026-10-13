@@ -188,11 +188,7 @@ fn footage_item(id: u32, w: u32, h: u32, path: &str) -> Vec<u8> {
     let opti = b"MooV".to_vec();
     list(
         b"Item",
-        &[
-            idta(7, id),
-            chunk(b"Utf8", b""),
-            list(b"Pin ", &[chunk(b"sspc", &sspc), list(b"Als2", &[chunk(b"alas", alias.as_bytes())]), chunk(b"opti", &opti)]),
-        ],
+        &[idta(7, id), chunk(b"Utf8", b""), list(b"Pin ", &[chunk(b"sspc", &sspc), list(b"Als2", &[chunk(b"alas", alias.as_bytes())]), chunk(b"opti", &opti)])],
     )
 }
 
@@ -221,12 +217,11 @@ fn mask(points: &[[f32; 2]]) -> Vec<Vec<u8>> {
 /// layer, and a solid layer with keyframes, a mask and an effect, parented to the movie.
 fn sample() -> Vec<u8> {
     let solids = list(b"Item", &[idta(1, 10), chunk(b"Utf8", b"Solids"), list(b"Sfdr", &[solid_item(11, 640, 360, [1.0, 1.0, 0.5, 0.25], "Warm Solid 1")])]);
-    let movie = footage_item(12, 1280, 720, "C:\\shots\\Shot1.mov");
+    let movie = footage_item(12, 1280, 720, "C:\\shots\\plate.mov");
     let pre_layer = list(b"Layr", &[ldta(&L { id: 1, source: 11, ..Default::default() }), chunk(b"Utf8", b""), group(&[])]);
     let precomp = list(b"Item", &[idta(4, 20), chunk(b"Utf8", b"Matte"), cdta(640, 360, 60), pre_layer]);
 
-    let matte_layer =
-        list(b"Layr", &[ldta(&L { id: 5, source: 20, flags: [0, 0, 0x06], ..Default::default() }), chunk(b"Utf8", b"Matte layer"), group(&[])]);
+    let matte_layer = list(b"Layr", &[ldta(&L { id: 5, source: 20, flags: [0, 0, 0x06], ..Default::default() }), chunk(b"Utf8", b"Matte layer"), group(&[])]);
     let movie_layer = list(
         b"Layr",
         &[
@@ -239,10 +234,7 @@ fn sample() -> Vec<u8> {
         tdmn("ADBE Anchor Point"),
         fixed(3, &[320.0, 180.0, 0.0]),
         tdmn("ADBE Position"),
-        list(
-            b"tdbs",
-            &[tdb4(3, true), key_list(128, &[key_pos(0, [100.0, 50.0, 0.0], [10.0, -5.0, 0.0]), key_pos(30_000, [400.0, 300.0, 0.0], [0.0; 3])])],
-        ),
+        list(b"tdbs", &[tdb4(3, true), key_list(128, &[key_pos(0, [100.0, 50.0, 0.0], [10.0, -5.0, 0.0]), key_pos(30_000, [400.0, 300.0, 0.0], [0.0; 3])])]),
         tdmn("ADBE Scale"),
         fixed(3, &[0.5, 0.5, 1.0]),
         tdmn("ADBE Rotate Z"),
@@ -308,13 +300,13 @@ fn items_and_compositions() {
     let ItemKind::Solid(s) = &solid.kind else { panic!("not a solid") };
     assert_eq!((s.width, s.height, s.color), (640, 360, [1.0, 0.5, 0.25]));
     // The link that was not found is kept as missing footage with the recorded facts.
-    let movie = p.find_by_name("Shot1.mov").unwrap();
+    let movie = p.find_by_name("plate.mov").unwrap();
     let ItemKind::Footage(f) = &movie.kind else { panic!("not footage") };
     assert!(f.missing);
-    assert_eq!((f.width, f.height, f.path.as_str()), (1280, 720, "C:\\shots\\Shot1.mov"));
+    assert_eq!((f.width, f.height, f.path.as_str()), (1280, 720, "C:\\shots\\plate.mov"));
     assert_eq!(f.duration, Tick::from_units(3, 1));
     assert_eq!(r.missing_footage, 1);
-    assert!(r.warnings.iter().any(|w| w.contains("linked file not found") && w.contains("Shot1.mov")));
+    assert!(r.warnings.iter().any(|w| w.contains("linked file not found") && w.contains("plate.mov")));
     let main = p.comp(r.main_comp.unwrap()).unwrap();
     assert_eq!((main.width, main.height), (1280, 720));
     assert!((main.frame_rate.as_f64() - 30.0).abs() < 1e-9);
@@ -329,7 +321,7 @@ fn layers_timing_switches_and_links() {
     let main = p.comp(r.main_comp.unwrap()).unwrap();
     assert_eq!(r.layers, 4);
     let names: Vec<&str> = main.layers.iter().map(|l| l.name.as_str()).collect();
-    assert_eq!(names, ["Matte layer", "Shot1.mov", "Grade"]);
+    assert_eq!(names, ["Matte layer", "plate.mov", "Grade"]);
     let (matte, movie, grade) = (&main.layers[0], &main.layers[1], &main.layers[2]);
     assert!(matches!(matte.source, LayerSource::Comp { .. }));
     assert!(!matte.switches.video);
@@ -406,13 +398,13 @@ fn the_caller_supplies_found_footage() {
     let mut asked = vec![];
     let mut locate = |f: &FootageRef| -> Option<Footage> {
         asked.push((f.path.map(str::to_string), f.width, f.height, f.fps));
-        Some(Footage { path: "D:/copies/Shot1.mov".into(), width: 1280, height: 720, ..Default::default() })
+        Some(Footage { path: "D:/copies/plate.mov".into(), width: 1280, height: 720, ..Default::default() })
     };
     let r = import(&mut p, &sample(), &mut locate).unwrap();
-    assert_eq!(asked, vec![(Some("C:\\shots\\Shot1.mov".to_string()), 1280, 720, 30.0)]);
+    assert_eq!(asked, vec![(Some("C:\\shots\\plate.mov".to_string()), 1280, 720, 30.0)]);
     assert_eq!(r.missing_footage, 0);
-    let ItemKind::Footage(f) = &p.find_by_name("Shot1.mov").unwrap().kind else { panic!("not footage") };
-    assert_eq!((f.path.as_str(), f.missing), ("D:/copies/Shot1.mov", false));
+    let ItemKind::Footage(f) = &p.find_by_name("plate.mov").unwrap().kind else { panic!("not footage") };
+    assert_eq!((f.path.as_str(), f.missing), ("D:/copies/plate.mov", false));
 }
 
 /// A damaged or hostile file must give an error or a partial import, never a panic.
@@ -442,4 +434,40 @@ fn a_comp_that_contains_itself_is_refused() {
     let (p, r) = run(&file(&[list(b"Fold", &[comp])]));
     assert!(p.comp(r.main_comp.unwrap()).unwrap().layers.is_empty());
     assert!(r.warnings.iter().any(|w| w.contains("uses its own composition")));
+}
+
+/// Expressions are not run yet: each one is reported, in both ways the file can store it.
+#[test]
+fn expressions_are_reported() {
+    let with = |chunk_id: &[u8; 4], text: &[u8]| list(b"tdbs", &[tdb4(1, false), chunk(b"cdat", &f64s(&[1.0])), chunk(chunk_id, text)]);
+    let transform = group(&[tdmn("ADBE Opacity"), with(b"expr", b"wiggle(7, 100)\0"), tdmn("ADBE Rotate Z"), with(b"Utf8", b"time * 90")]);
+    let layer =
+        list(b"Layr", &[ldta(&L { id: 1, source: 11, ..Default::default() }), chunk(b"Utf8", b"Wobble"), group(&[tdmn("ADBE Transform Group"), transform])]);
+    let comp = list(b"Item", &[idta(4, 30), chunk(b"Utf8", b"Comp"), cdta(100, 100, 30), layer]);
+    let (p, r) = run(&file(&[list(b"Fold", &[solid_item(11, 100, 100, [1.0, 0.0, 0.0, 0.0], "Black Solid 1"), comp])]));
+    assert!(r.warnings.iter().any(|w| w.starts_with("expression not imported") && w.ends_with("(×2)")), "{:?}", r.warnings);
+    // The values under the expressions still arrive.
+    let tr = p.comp(r.main_comp.unwrap()).unwrap().layers[0].transform().unwrap().clone();
+    assert_eq!(tr.get("opacity").unwrap().value, Value::Scalar(100.0));
+}
+
+/// A text layer arrives with its text, font, size and fill colour.
+#[test]
+fn text_layers_bring_their_text() {
+    let blob = crate::text::tests::document("Episode\rTitle\r", &[(14, 0, 96.0, [1.0, 0.75, 0.5, 0.25])]);
+    let btdk = chunk(b"LIST", &[b"btdk".as_slice(), blob.as_slice()].concat());
+    let text = group(&[tdmn("ADBE Text Document"), list(b"btds", &[list(b"tdbs", &[tdb4(1, false)]), btdk])]);
+    let layer = list(
+        b"Layr",
+        &[ldta(&L { id: 1, ty: 3, flags: [0, 0, 0x87], ..Default::default() }), chunk(b"Utf8", b"Title"), group(&[tdmn("ADBE Text Properties"), text])],
+    );
+    let comp = list(b"Item", &[idta(4, 30), chunk(b"Utf8", b"Comp"), cdta(1920, 1080, 30), layer]);
+    let (p, r) = run(&file(&[list(b"Fold", &[comp])]));
+    let l = &p.comp(r.main_comp.unwrap()).unwrap().layers[0];
+    assert!(matches!(l.source, LayerSource::Text));
+    assert!(l.switches.collapse);
+    let Value::Text(doc) = &l.props.prop("text/sourceText").unwrap().value else { panic!("not text") };
+    assert_eq!((doc.text.as_str(), doc.font.as_str(), doc.size), ("Episode\nTitle", "Title-Bold", 96.0));
+    assert_eq!(doc.fill, [0.75, 0.5, 0.25, 1.0]);
+    assert!(r.warnings.iter().any(|w| w.starts_with("text layer: its text, fonts, sizes and fill colours are imported")));
 }
