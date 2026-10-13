@@ -467,7 +467,8 @@ fn read_group(group: &Chunk, depth: usize) -> Vec<RawNode> {
         if mn == "ADBE Group End" {
             continue;
         }
-        let user_name = |c: &Chunk| c.first(b"tdsn").map(|n| text_field(n.data)).unwrap_or_default();
+        // After Effects CC writes `-_0_/-` where an instance was given no name of its own.
+        let user_name = |c: &Chunk| c.first(b"tdsn").map(|n| text_field(n.data)).filter(|n| n != "-_0_/-").unwrap_or_default();
         let (name, kind) = match &ty {
             b"tdgp" => match mkif {
                 // mkif: inverted u8 @0, locked u8 @1, mode u16 @6.

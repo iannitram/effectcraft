@@ -461,6 +461,17 @@ fn a_gel_layer_only_counts_in_a_gel_render_mode() {
     assert!(r.warnings.iter().any(|w| w.contains("could not be carried over") && w.contains("Gel Layer")), "{:?}", r.warnings);
 }
 
+/// After Effects CC stores `-_0_/-` as the name of an effect nobody renamed. It is not a name:
+/// the effect is called what it is. A name somebody gave is kept.
+#[test]
+fn the_placeholder_for_no_name_is_not_a_name() {
+    let defs = vec![def("ADBE Glo2-0000", 0, "", |_| {}), slider("ADBE Glo2-0003", "Glow Radius", 10.0, 1000.0, false)];
+    let unnamed = effect("Glow", &defs, 9, &[chunk(b"tdsn", b"-_0_/-\0")]);
+    let named = effect("Glow", &defs, 9, &[chunk(b"tdsn", b"Halo\0")]);
+    let (p, r) = run(&project(&[vec![("ADBE Glo2", unnamed), ("ADBE Glo2", named)]]));
+    assert_eq!((effect_of(&p, &r, 0, 0).name.as_str(), effect_of(&p, &r, 0, 1).name.as_str()), ("Glow", "Halo"));
+}
+
 /// Fast Blur has no twin here: Gaussian Blur stands in with the same Blurriness, and the
 /// import list says so.
 #[test]
