@@ -461,6 +461,51 @@ fn a_gel_layer_only_counts_in_a_gel_render_mode() {
     assert!(r.warnings.iter().any(|w| w.contains("could not be carried over") && w.contains("Gel Layer")), "{:?}", r.warnings);
 }
 
+/// CC Spotlight: a Cone Angle past our widest is held there and the effect stays on, and
+/// Intensity over 100% is held at 100% in the Light Shadow mode, where After Effects does not
+/// brighten the lit area. Each is said in the import list.
+#[test]
+fn cc_spotlight_cone_angle_and_light_shadow_intensity() {
+    let defs = |render: i16| {
+        vec![
+            def("CC Spotlight-0000", 0, "", |_| {}),
+            slider("CC Spotlight-0004", "Cone Angle", 10.0, 360.0, false),
+            slider("CC Spotlight-0007", "Intensity", 100.0, 400.0, false),
+            popup("CC Spotlight-0008", "Render", "Light Only|Light Add|Light Add+|Light Shadow|(-|Gel Only|Gel Add|Gel Add+|Gel Shadow", render),
+        ]
+    };
+    let key = |t: i32, v: f64| {
+        let mut k = key_head(t, 1);
+        k.extend([v, 0.0, 0.0, 0.0, 0.0].iter().flat_map(|x| x.to_be_bytes()));
+        k
+    };
+    let scale = crate::settings::SPOT_CONE_SCALE;
+    let said = |r: &crate::ImportResult, part: &str| r.warnings.iter().any(|w| w.starts_with("effect CC Spotlight") && w.contains(part));
+    // As a title has it: Light Shadow (the default), 123%, the cone opening from 12.8 to 143.9.
+    let cone = list(b"tdbs", &[tdb4(1, false), key_list(48, &[key(0, 12.8), key(30_000, 143.9)])]);
+    let wide = effect("CC Spotlight", &defs(4), 1, &[vec![tdmn("CC Spotlight-0004"), cone], stored("CC Spotlight-0007", 1, &[123.0])].concat());
+    let (p, r) = run(&project(&[vec![("CC Spotlight", wide)]]));
+    let g = effect_of(&p, &r, 0, 0);
+    assert!(g.enabled, "{:?}", r.warnings);
+    let keys = &g.prop("coneAngle").unwrap().keys;
+    assert_eq!(keys.len(), 2);
+    assert_eq!((&keys[0].value, &keys[1].value), (&Value::Scalar((12.8 * scale).min(89.9)), &Value::Scalar(89.9)));
+    assert_eq!(num(&g, "intensity"), 100.0);
+    assert!(said(&r, "Cone Angle goes past") && said(&r, "Intensity above 100% is held at 100%"), "{:?}", r.warnings);
+    // Left alone: After Effects' default cone, and nothing to say about holding anything.
+    let plain = effect("CC Spotlight", &defs(4), 1, &[]);
+    let (p, r) = run(&project(&[vec![("CC Spotlight", plain)]]));
+    let g = effect_of(&p, &r, 0, 0);
+    assert!(g.enabled, "{:?}", r.warnings);
+    assert_eq!((num(&g, "coneAngle"), num(&g, "intensity")), (10.0 * scale, 100.0));
+    assert!(!said(&r, "held at"), "{:?}", r.warnings);
+    // In another mode the light does brighten: the number stays.
+    let add = effect("CC Spotlight", &defs(2), 1, &stored("CC Spotlight-0007", 1, &[123.0]));
+    let (p, r) = run(&project(&[vec![("CC Spotlight", add)]]));
+    assert_eq!(num(&effect_of(&p, &r, 0, 0), "intensity"), 123.0);
+    assert!(!said(&r, "Intensity"), "{:?}", r.warnings);
+}
+
 /// Fast Blur has no twin here: Gaussian Blur stands in with the same Blurriness, and the
 /// import list says so.
 #[test]

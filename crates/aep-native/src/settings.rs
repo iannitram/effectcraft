@@ -350,6 +350,9 @@ pub(crate) fn apply(spec: &EffectSpec, fg: &mut PropGroup, effect: &str, params:
     if effect == "CC Spotlight" && !popup_choice(defs, params, "render").is_some_and(|r| r.starts_with("gel")) {
         out.unread.retain(|u| norm(u) != "gel layer");
     }
+    if effect == "CC Spotlight" {
+        spotlight(fg, params, defs, &mut out);
+    }
     // Effect opacity and effect masks (After Effects CC 2014 and later).
     let options = params.iter().find(|n| n.match_name == "ADBE Effect Built In Params").and_then(|n| match &n.kind {
         RawKind::Group(g) => Some(g),
@@ -359,6 +362,67 @@ pub(crate) fn apply(spec: &EffectSpec, fg: &mut PropGroup, effect: &str, params:
         out.notes.push("its Compositing Options (effect opacity, effect masks) are not imported".into());
     }
     out
+}
+
+/// EffectCraft's widest and narrowest Cone Angle.
+const SPOT_CONE: (f64, f64) = (0.1, 89.9);
+/// After Effects takes a Cone Angle up to this (read from projects' parameter lists).
+const SPOT_CONE_THEIRS: f64 = 360.0;
+/// What an After Effects Cone Angle is multiplied by to give the same reach here.
+pub(crate) const SPOT_CONE_SCALE: f64 = 1.0;
+
+/// Hold a number and its keyframes inside a range. `true` when anything was outside it.
+fn hold(prop: &mut Property, lo: f64, hi: f64) -> bool {
+    let mut cut = false;
+    for v in std::iter::once(&mut prop.value).chain(prop.keys.iter_mut().map(|k| &mut k.value)) {
+        if let Value::Scalar(x) = v {
+            let y = x.clamp(lo, hi);
+            cut |= y != *x;
+            *x = y;
+        }
+    }
+    cut
+}
+
+/// CC Spotlight's two settings that do not mean here what they mean in After Effects.
+///
+/// **Cone Angle.** After Effects accepts up to 360, EffectCraft up to 89.9 (it takes the
+/// number for the angle between the light's axis and the cone's edge). An angle past our
+/// widest is held there with a note instead of leaving the effect switched off: at that
+/// width the whole layer in front of the light is lit, which is what such a project shows.
+///
+/// **Intensity over 100% in the Light Shadow mode** (After Effects' default mode, and the
+/// one our "Light" stands for). Measured on six published titles lit this way at 123%: the
+/// lit letters keep their fill colour exactly (148 of 255 in green and blue, where 123% of
+/// it would be 182), so After Effects darkens outside the light and does not brighten inside
+/// it. Ours multiplies, so the number is held at 100% with a note.
+fn spotlight(fg: &mut PropGroup, params: &[RawNode], defs: &[RawParamDef], out: &mut Outcome) {
+    use param_kind::*;
+    let cone = defs.iter().find(|d| matches!(d.kind, INT_SLIDER | FIXED_SLIDER | FLOAT_SLIDER) && norm(&d.name) == "cone angle");
+    if let (Some(def), Some(prop)) = (cone, fg.prop_mut("coneAngle")) {
+        let conv = Conv::Scalar { scale: SPOT_CONE_SCALE, min: 0.0, max: SPOT_CONE_THEIRS * SPOT_CONE_SCALE };
+        let mut trial = prop.clone();
+        let read = match stored(params, &def.match_name) {
+            Some(raw) => put(&mut trial, raw, &conv),
+            None => conv.value(&def.default).map(|v| trial.value = v).is_some(),
+        };
+        if read {
+            out.unread.retain(|u| norm(u) != "cone angle");
+            if hold(&mut trial, SPOT_CONE.0, SPOT_CONE.1) {
+                out.notes.push(format!("its Cone Angle goes past EffectCraft's widest and is held at {}°", SPOT_CONE.1));
+            }
+            *prop = trial;
+            if (SPOT_CONE_SCALE - 1.0).abs() > f64::EPSILON {
+                out.notes.push(format!("its Cone Angle is multiplied by {SPOT_CONE_SCALE}: EffectCraft's light reaches less far than After Effects' at the same angle"));
+            }
+        }
+    }
+    if popup_choice(defs, params, "render").as_deref() == Some("light shadow")
+        && let Some(prop) = fg.prop_mut("intensity")
+        && hold(prop, f64::NEG_INFINITY, 100.0)
+    {
+        out.notes.push("its Intensity above 100% is held at 100%: in the Light Shadow mode After Effects does not brighten the lit area, and EffectCraft's light would".into());
+    }
 }
 
 const LEVELS_HEAD: usize = 8;
