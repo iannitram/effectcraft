@@ -63,10 +63,24 @@ fn coverage(ctx: &EvalCtx, layer: &Layer, g: &effectcraft_project::PropGroup, bu
 fn coverage_at(ctx: &EvalCtx, layer: &Layer, g: &effectcraft_project::PropGroup, buf: &Buf) -> Option<Mask> {
     let Value::Path(sp) = ctx.group_value(layer, g, "path")? else { return None };
     let path = effectcraft_path::to_kurbo(&sp);
-    let (w, h) = (buf.img.width, buf.img.height);
-    let m = Mat3::translate(vec2(buf.offset[0], buf.offset[1])) * Mat3::scale(vec2(buf.scale, buf.scale));
+    let (lw, lh) = (buf.img.width, buf.img.height);
     let exp = ctx.f(layer, g, "expansion", 0.0);
     let linear = matches!(g.kind, GroupKind::Mask { feather_falloff: FeatherFalloff::Linear, .. });
+    let feather = ctx.v2(layer, g, "feather", [0.0; 2]);
+    // A mask lives on an endless plane: where its path covers the layer's edge and beyond, the
+    // feather must not fade toward that edge. So the coverage is rasterised into a buffer padded
+    // by the feather's reach and the layer's rectangle is cut back out after the blur.
+    let reach = |f: f64| -> u32 {
+        if f <= 0.0 || !f.is_finite() {
+            return 0;
+        }
+        // Half the feather is the box radius (linear) or the Gaussian's sigma (three of them).
+        let px = f * buf.scale / 2.0 * if linear { 1.0 } else { 3.0 };
+        px.ceil().clamp(1.0, MAX_FEATHER_PAD as f64) as u32
+    };
+    let (pad_x, pad_y) = (reach(feather[0]), reach(feather[1]));
+    let (w, h) = (lw.saturating_add(2 * pad_x), lh.saturating_add(2 * pad_y));
+    let m = Mat3::translate(vec2(buf.offset[0] + pad_x as f64, buf.offset[1] + pad_y as f64)) * Mat3::scale(vec2(buf.scale, buf.scale));
     // Variable-width feather (Mask Feather tool points): expansion and the per-point feather
     // are applied together from the signed distance to the path.
     let variable = !sp.feather.is_empty();
@@ -87,7 +101,6 @@ fn coverage_at(ctx: &EvalCtx, layer: &Layer, g: &effectcraft_project::PropGroup,
             *c = if exp > 0.0 { (*c + r - *c * r).min(1.0) } else { (*c * (1.0 - r)).max(0.0) };
         });
     }
-    let feather = ctx.v2(layer, g, "feather", [0.0; 2]);
     if feather[0] > 0.0 || feather[1] > 0.0 {
         let img = cov.to_image();
         let b = if linear {
@@ -99,7 +112,29 @@ fn coverage_at(ctx: &EvalCtx, layer: &Layer, g: &effectcraft_project::PropGroup,
         };
         cov = Mask::from_alpha(&b);
     }
+    if pad_x > 0 || pad_y > 0 {
+        cov = cropped(&cov, pad_x, pad_y, lw, lh);
+    }
     Some(cov)
+}
+
+/// Most pixels a mask's coverage buffer is padded by on each side for its feather.
+const MAX_FEATHER_PAD: u32 = 4096;
+
+/// The `w`×`h` rectangle of `m` whose top-left corner is at (`x0`, `y0`).
+fn cropped(m: &Mask, x0: u32, y0: u32, w: u32, h: u32) -> Mask {
+    let mut out = Mask::new(w, h, 0.0);
+    let (stride, x0, y0, w) = (m.width as usize, x0 as usize, y0 as usize, w as usize);
+    if w == 0 {
+        return out;
+    }
+    for (y, row) in out.data.chunks_exact_mut(w).enumerate() {
+        let start = (y + y0) * stride + x0;
+        if let Some(src) = m.data.get(start..start + w) {
+            row.copy_from_slice(src);
+        }
+    }
+    out
 }
 
 /// The layer's enabled masks at the context time, flattened to polylines in layer space (for
