@@ -77,7 +77,7 @@ struct L {
     start: i32,
     inp: i32,
     out: i32,
-    stretch: i16,
+    stretch: (i32, u32),
     flags: [u8; 3],
     blend: u32,
     matte: u32,
@@ -87,7 +87,7 @@ struct L {
 
 impl Default for L {
     fn default() -> Self {
-        L { id: 1, source: 0, start: 0, inp: 0, out: 30_000, stretch: 1, flags: [0, 0, 0x07], blend: 2, matte: 0, ty: 0, parent: 0 }
+        L { id: 1, source: 0, start: 0, inp: 0, out: 30_000, stretch: (1, 1), flags: [0, 0, 0x07], blend: 2, matte: 0, ty: 0, parent: 0 }
     }
 }
 
@@ -96,7 +96,8 @@ fn ldta(l: &L) -> Vec<u8> {
     let mut d = vec![0u8; 160];
     put(&mut d, 0, &l.id.to_be_bytes());
     put(&mut d, 4, &2u16.to_be_bytes());
-    put(&mut d, 10, &l.stretch.to_be_bytes());
+    put(&mut d, 8, &l.stretch.0.to_be_bytes());
+    put(&mut d, 108, &l.stretch.1.to_be_bytes());
     for (at, v) in [(12, l.start), (20, l.inp), (28, l.out)] {
         put(&mut d, at, &v.to_be_bytes());
         put(&mut d, at + 4, &30_000u32.to_be_bytes());
@@ -219,6 +220,11 @@ fn mask(points: &[[f32; 2]]) -> Vec<Vec<u8>> {
 /// precomp (20) with one solid layer; a main comp (30) with a movie layer matted by a precomp
 /// layer, and a solid layer with keyframes, a mask and an effect, parented to the movie.
 fn sample() -> Vec<u8> {
+    sample_stretched((2, 1))
+}
+
+/// [`sample`] with the movie layer's time stretch as given.
+fn sample_stretched(stretch: (i32, u32)) -> Vec<u8> {
     let solids = list(b"Item", &[idta(1, 10), chunk(b"Utf8", b"Solids"), list(b"Sfdr", &[solid_item(11, 640, 360, [1.0, 1.0, 0.5, 0.25], "Warm Solid 1")])]);
     let movie = footage_item(12, 1280, 720, "C:\\shots\\plate.mov");
     let pre_layer = list(b"Layr", &[ldta(&L { id: 1, source: 11, ..Default::default() }), chunk(b"Utf8", b""), group(&[])]);
@@ -228,7 +234,7 @@ fn sample() -> Vec<u8> {
     let movie_layer = list(
         b"Layr",
         &[
-            ldta(&L { id: 6, source: 12, start: 15_000, inp: 3_000, out: 33_000, stretch: 2, flags: [0, 0, 0x17], blend: 6, matte: 3, ..Default::default() }),
+            ldta(&L { id: 6, source: 12, start: 15_000, inp: 3_000, out: 33_000, stretch, flags: [0, 0, 0x17], blend: 6, matte: 3, ..Default::default() }),
             chunk(b"Utf8", b""),
             group(&[]),
         ],
@@ -341,7 +347,35 @@ fn layers_timing_switches_and_links() {
     assert_eq!(grade.parent, Some(movie.id));
     assert_eq!(grade.blend_mode, effectcraft_color::BlendMode::SoftLight);
     assert_eq!(grade.label, effectcraft_color::Label::Green);
-    assert!(r.warnings.iter().any(|w| w.contains("time stretch read as 200%")));
+    assert!(!r.warnings.iter().any(|w| w.contains("time stretch")), "{:?}", r.warnings);
+}
+
+/// Time stretch is a fraction (numerator @8, denominator @108 of the layer record): 70% and
+/// 75% arrive as such, not as 700% and 300%, and the in and out points scale with it.
+#[test]
+fn time_stretch_is_a_fraction() {
+    let movie = |stretch| {
+        let (p, r) = run(&sample_stretched(stretch));
+        let l = p.comp(r.main_comp.unwrap()).unwrap().layers[1].clone();
+        (l.stretch, l.start_time, l.in_point, l.out_point, r.warnings.iter().any(|w| w.contains("time stretch")))
+    };
+    let near = |t: Tick, num: i64, den: i64| (t.0 - Tick::from_units(num, den).0).abs() <= 2;
+    // Start 0.5 s; in 0.1 s and out 1.1 s of layer time.
+    let (s, start, a, b, warned) = movie((7, 10));
+    assert!((s - 70.0).abs() < 1e-9 && start == Tick::from_units(1, 2) && !warned, "{s}");
+    assert!(near(a, 57, 100) && near(b, 127, 100), "70%: {a:?} to {b:?}");
+    let (s, _, a, b, _) = movie((3, 4));
+    assert!((s - 75.0).abs() < 1e-9 && near(a, 575, 1000) && near(b, 1325, 1000), "75%: {s} {a:?} to {b:?}");
+    let (s, _, a, b, _) = movie((1, 2));
+    assert!((s - 50.0).abs() < 1e-9 && near(a, 55, 100) && near(b, 105, 100), "50%: {s} {a:?} to {b:?}");
+    // Reversed: the layer runs backwards from its start, so in and out swap sides.
+    let (s, _, a, b, warned) = movie((-1, 1));
+    assert!((s + 100.0).abs() < 1e-9 && near(a, -6, 10) && near(b, 4, 10) && !warned, "reversed: {s} {a:?} to {b:?}");
+    // A zero on either side, or a factor no timeline could show, is named and read as 100%.
+    for bad in [(0, 1), (3, 0), (i32::MAX, 1), (1, u32::MAX)] {
+        let (s, _, a, b, warned) = movie(bad);
+        assert!(s == 100.0 && near(a, 6, 10) && near(b, 16, 10) && warned, "{bad:?}: {s} {a:?} to {b:?}");
+    }
 }
 
 #[test]

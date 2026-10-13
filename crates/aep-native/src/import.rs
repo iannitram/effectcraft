@@ -567,17 +567,21 @@ fn build_layers(cx: &mut Ctx, project: &mut Project, comp: &mut Comp, raw: &RawC
         l.name = name;
         by_id.insert(rl.id, l.id);
         cx.layers += 1;
-        // In and out points are stored in layer time, before the stretch.
-        let stretch = if rl.stretch == 0 { 1.0 } else { rl.stretch as f64 };
+        // In and out points are stored in layer time, before the stretch. The stretch is a
+        // fraction; one with a zero in it, or outside what a timeline can show, is not believed.
+        let stretch = match rl.stretch {
+            (n, d) if n != 0 && d != 0 && (0.001..=1000.0).contains(&(n as f64 / d as f64).abs()) => n as f64 / d as f64,
+            (n, d) => {
+                cx.warn.add(format!("time stretch {n}/{d} is not understood: read as 100%"));
+                1.0
+            }
+        };
         let start = tick(rl.start);
         let (a, b) = (Tick::from_seconds_f64(rl.in_point.seconds() * stretch), Tick::from_seconds_f64(rl.out_point.seconds() * stretch));
         l.start_time = start;
         l.in_point = Tick(start.0.saturating_add(a.0.min(b.0)));
         l.out_point = Tick(start.0.saturating_add(a.0.max(b.0)));
         l.stretch = stretch * 100.0;
-        if rl.stretch != 1 && rl.stretch != 0 {
-            cx.warn.add(format!("time stretch read as {}% (only whole factors are understood so far)", rl.stretch as i32 * 100));
-        }
         l.label = label(rl.label);
         l.switches.video = rl.video;
         l.switches.audio = rl.audio;

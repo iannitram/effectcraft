@@ -14,7 +14,7 @@
 //! **What is imported** ([`import`]): folders, compositions (size, frame rate, duration, work
 //! area, pixel aspect), solids, linked files (found by the caller, or kept as missing footage
 //! with the recorded size and duration), and layers: source, name, label, timing (start, in,
-//! out, whole-number stretch), switches, blend mode, parent, track matte, the transform group
+//! out, time stretch), switches, blend mode, parent, track matte, the transform group
 //! with keyframes (interpolation kind, ease, spatial tangents), time remapping, audio levels
 //! with keyframes, masks (mode, inverted, path with keyframes, feather, opacity, expansion),
 //! and effects with their settings: sliders, angles, checkboxes, pop-ups, colours, points and
@@ -26,7 +26,7 @@
 //! **What is not, yet** (each is listed in [`ImportResult::warnings`] when a project uses it):
 //! other effects' private data and colour keyframes, text stroke, baseline shift, box text
 //! and animators, shape layer contents, camera and light options, layer styles, expressions,
-//! markers, separated position dimensions, orientation, fractional time stretch.
+//! markers, separated position dimensions, orientation.
 //!
 //! Keyframe times in the file are layer time, which is EffectCraft's convention too.
 
