@@ -6,6 +6,9 @@ use effectcraft_time::Tick;
 
 use crate::{FootageRef, import, is_aep};
 
+#[path = "tests_settings.rs"]
+mod settings;
+
 fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
     let mut v = id.to_vec();
     v.extend((data.len() as u32).to_be_bytes());
@@ -382,13 +385,13 @@ fn masks_and_effects() {
     assert_eq!(path.in_tangents[0], [80.0, 180.0]);
     assert_eq!(m.get("feather").unwrap().value, Value::Vec2([12.0, 12.0]));
     assert_eq!(m.get("opacity").unwrap().value, Value::Scalar(50.0));
-    // A known effect arrives switched off (its settings are not read yet); an unknown one is
-    // skipped; both are reported.
+    // A known effect with nothing changed arrives switched on (settings: `tests_settings.rs`);
+    // an unknown one is skipped and reported.
     let fx: Vec<_> = grade.effects().unwrap().groups().collect();
     assert_eq!(fx.len(), 1);
     assert_eq!(fx[0].name, "Invert");
-    assert!(!fx[0].enabled);
-    assert!(r.warnings.iter().any(|w| w.contains("effect Invert: added switched off")));
+    assert!(fx[0].enabled);
+    assert!(!r.warnings.iter().any(|w| w.contains("effect Invert")), "{:?}", r.warnings);
     assert!(r.warnings.iter().any(|w| w.contains("effect Made Up (ACME Made Up) has no EffectCraft equivalent")));
 }
 

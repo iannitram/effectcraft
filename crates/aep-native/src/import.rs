@@ -12,8 +12,8 @@ use effectcraft_project::{
 };
 use effectcraft_time::{FrameRate, Tick};
 
-use crate::read::{AepFile, Rational, RawComp, RawFootage, RawItemKind, RawKey, RawKind, RawLayer, RawLayerKind, RawNode, RawProp, RawShape};
-use crate::{AepError, effects_table, rifx};
+use crate::read::{AepFile, Rational, RawComp, RawFootage, RawItemKind, RawKey, RawKind, RawLayer, RawLayerKind, RawNode, RawParamDef, RawProp, RawShape};
+use crate::{AepError, effects_table, rifx, settings};
 
 /// A linked file the project names, for the caller to find and describe.
 #[derive(Clone, Debug)]
@@ -58,7 +58,7 @@ impl Warnings {
     }
 }
 
-fn tick(r: Rational) -> Tick {
+pub(crate) fn tick(r: Rational) -> Tick {
     Tick::from_units(r.value, r.scale.max(1))
 }
 
@@ -133,7 +133,7 @@ fn scalar(v: &[f64], k: f64) -> Option<Value> {
 }
 
 /// A keyframe's value and, scaled the same way, its speeds and spatial tangents.
-fn key(k: &RawKey, value: Value, scale: f64, spatial: bool) -> Keyframe {
+pub(crate) fn key(k: &RawKey, value: Value, scale: f64, spatial: bool) -> Keyframe {
     let mut kf = Keyframe::new(tick(k.time), value);
     kf.in_interp = interp(k.in_interp);
     kf.out_interp = interp(k.out_interp);
@@ -176,8 +176,11 @@ fn apply(prop: &mut Property, raw: &RawProp, scale: f64, conv: &dyn Fn(&[f64], f
     true
 }
 
-struct Ctx<'a> {
+struct Ctx<'a, 'f> {
     warn: Warnings,
+    /// The project's description of each effect's parameters, by the effect's match name. A
+    /// project stores it with the first instance of an effect only.
+    defs: BTreeMap<&'f str, &'f [RawParamDef]>,
     /// After Effects item id → ours.
     items: BTreeMap<u32, ItemId>,
     created: Vec<ItemId>,
@@ -198,7 +201,15 @@ pub fn import(project: &mut Project, bytes: &[u8], locate: &mut dyn FnMut(&Foota
     if file.items.is_empty() && root.list(b"Fold").is_none() {
         return Err(AepError::NotAep("no project folder found in the file".into()));
     }
-    let mut cx = Ctx { warn: Warnings::default(), items: BTreeMap::new(), created: vec![], locate, layers: 0, missing: 0, nested: vec![] };
+    let mut defs = BTreeMap::new();
+    for it in &file.items {
+        if let RawItemKind::Comp(c) = &it.kind {
+            for l in &c.layers {
+                effect_defs(&l.props, 0, &mut defs);
+            }
+        }
+    }
+    let mut cx = Ctx { warn: Warnings::default(), defs, items: BTreeMap::new(), created: vec![], locate, layers: 0, missing: 0, nested: vec![] };
     // Pass 1: every item, compositions still empty so layers can refer to any of them.
     for it in &file.items {
         let parent = cx.items.get(&it.parent).copied();
@@ -244,6 +255,22 @@ pub fn import(project: &mut Project, bytes: &[u8], locate: &mut dyn FnMut(&Foota
         .max_by_key(|c| project.comp(*c).map(|c| (c.layers.len(), c.duration)).unwrap_or_default())
         .or(comps.first().copied());
     Ok(ImportResult { items: cx.created, comps, main_comp, warnings: cx.warn.finish(), layers: cx.layers, missing_footage: cx.missing })
+}
+
+/// Every effect's parameter description found below `nodes`, the first one per effect.
+fn effect_defs<'f>(nodes: &'f [RawNode], depth: usize, out: &mut BTreeMap<&'f str, &'f [RawParamDef]>) {
+    if depth > 64 {
+        return;
+    }
+    for n in nodes {
+        match &n.kind {
+            RawKind::Effect { defs, .. } if !defs.is_empty() => {
+                out.entry(n.match_name.as_str()).or_insert(defs.as_slice());
+            }
+            RawKind::Group(g) => effect_defs(g, depth + 1, out),
+            _ => {}
+        }
+    }
 }
 
 fn empty_comp(c: &RawComp) -> Comp {
@@ -479,11 +506,17 @@ fn masks(cx: &mut Ctx, ids: &mut Ids, raw: &[RawNode], g: &mut PropGroup, size: 
     }
 }
 
-fn effects(cx: &mut Ctx, ids: &mut Ids, raw: &[RawNode], g: &mut PropGroup, size: (u32, u32)) {
+/// A layer chooser of an imported effect, to point at its layer once all layers exist: the
+/// effect's group, the parameter, the project's id of the layer, the effect's name.
+type LayerChoice = (u64, &'static str, u32, String);
+
+fn effects(cx: &mut Ctx, ids: &mut Ids, raw: &[RawNode], g: &mut PropGroup, size: (u32, u32), choices: &mut Vec<LayerChoice>) {
     for n in raw {
-        let RawKind::Effect { display, .. } = &n.kind else { continue };
+        let RawKind::Effect { display, enabled, params, defs } = &n.kind else { continue };
         let shown = if display.is_empty() { n.match_name.as_str() } else { display.as_str() };
+        let stand_in = effects_table::stand_in(&n.match_name);
         let spec = effects_table::effect_id(&n.match_name)
+            .or(stand_in.map(|s| s.0))
             .and_then(effectcraft_effects::find)
             .or_else(|| effectcraft_effects::all().into_iter().find(|s| !display.is_empty() && s.name.eq_ignore_ascii_case(display)));
         let Some(spec) = spec else {
@@ -492,10 +525,23 @@ fn effects(cx: &mut Ctx, ids: &mut Ids, raw: &[RawNode], g: &mut PropGroup, size
         };
         let name = if n.name.is_empty() { shown } else { n.name.as_str() };
         let mut fg = effectcraft_effects::instantiate(spec, ids, name, [size.0 as f64, size.1 as f64]);
-        // Parameter values are not read yet, so the effect would render with its defaults:
-        // it is added switched off rather than shown wrong.
-        fg.enabled = false;
-        cx.warn.add(format!("effect {shown}: added switched off, its settings are not imported yet"));
+        let defs: &[RawParamDef] = if defs.is_empty() { cx.defs.get(n.match_name.as_str()).copied().unwrap_or(&[]) } else { defs };
+        let read = settings::apply(spec, &mut fg, &n.match_name, params, defs, size);
+        // An effect with a setting that could not be carried over would render wrong: it is
+        // added switched off rather than shown wrong, and the settings are named.
+        fg.enabled = *enabled && read.unread.is_empty();
+        if !read.unread.is_empty() {
+            cx.warn.add(format!("effect {shown}: added switched off, these settings could not be carried over: {}", read.unread.join(", ")));
+        } else if !*enabled {
+            cx.warn.add(format!("effect {shown}: switched off in the project, kept off"));
+        }
+        for note in read.notes {
+            cx.warn.add(format!("effect {shown}: {note}"));
+        }
+        if let Some((_, what)) = stand_in {
+            cx.warn.add(format!("effect {shown}: imported as {what}"));
+        }
+        choices.extend(read.layer_refs.iter().map(|(param, layer)| (fg.uid, *param, *layer, shown.to_string())));
         g.children.push(Node::Group(fg));
     }
 }
@@ -505,6 +551,7 @@ fn build_layers(cx: &mut Ctx, project: &mut Project, comp: &mut Comp, raw: &RawC
     // (our layer, After Effects parent id, matte mode, the layer above).
     let mut pending: Vec<(LayerId, u32, u32, Option<LayerId>)> = vec![];
     let mut above: Option<LayerId> = None;
+    let mut choices: Vec<LayerChoice> = vec![];
     for rl in &raw.layers {
         let (src, size) = source(cx, project, comp, rl);
         if matches!(src, LayerSource::Comp { item } if project.comp_contains(item, comp_id)) {
@@ -601,7 +648,7 @@ fn build_layers(cx: &mut Ctx, project: &mut Project, comp: &mut Comp, raw: &RawC
                 }
                 ("ADBE Effect Parade", RawKind::Group(raw_fx)) => {
                     if let Some(g) = l.props.sub_mut("effects") {
-                        effects(cx, &mut ids, raw_fx, g, size);
+                        effects(cx, &mut ids, raw_fx, g, size, &mut choices);
                     } else if !raw_fx.is_empty() {
                         cx.warn.add("effects on a layer type that has none here: skipped");
                     }
@@ -628,6 +675,18 @@ fn build_layers(cx: &mut Ctx, project: &mut Project, comp: &mut Comp, raw: &RawC
         pending.push((l.id, rl.parent, rl.matte, above));
         above = Some(l.id);
         comp.layers.push(l);
+    }
+    // Layer choosers of effects, now that every layer of the composition has its id.
+    for (group, param, layer, shown) in choices {
+        let target = by_id.get(&layer).copied();
+        let Some(fg) = comp.layers.iter_mut().find_map(|l| l.props.find_group_mut(group)) else { continue };
+        match (target, fg.prop_mut(param)) {
+            (Some(target), Some(p)) => p.value = Value::Layer(Some(target.0)),
+            _ => {
+                fg.enabled = false;
+                cx.warn.add(format!("effect {shown}: added switched off, the layer it uses was not found in its composition"));
+            }
+        }
     }
     for (id, parent, matte, above) in pending {
         let parent_id = by_id.get(&parent).copied().filter(|p| *p != id);

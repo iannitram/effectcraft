@@ -4,20 +4,27 @@
 //! names and the broad layout of the property tree as the community has publicly described
 //! them (After Effects publishes no specification); After Effects' documented match names; and
 //! measurements on projects saved by After Effects 6.5 through 2025, which is where every
-//! field position used here was checked. No Adobe code was read, and no other reader's source
-//! code (py-aep and the like) was read or ported. Field positions are written down where they
+//! field position used here was checked. An effect's parameter definitions (`pard`) are laid
+//! out the way After Effects' published plug-in programming interface describes a parameter;
+//! that description was recalled, not opened, and each position was then checked on files
+//! against defaults known from using After Effects. No Adobe code was read, and no other
+//! reader's source code (py-aep and the like) was read or ported. Field positions are written down where they
 //! are read ([`read`]); a field this crate does not understand is reported, not guessed.
 //!
 //! **What is imported** ([`import`]): folders, compositions (size, frame rate, duration, work
 //! area, pixel aspect), solids, linked files (found by the caller, or kept as missing footage
 //! with the recorded size and duration), and layers: source, name, label, timing (start, in,
 //! out, whole-number stretch), switches, blend mode, parent, track matte, the transform group
-//! with keyframes (interpolation kind, ease, spatial tangents), time remapping, and masks
-//! (mode, inverted, path with keyframes, feather, opacity, expansion).
+//! with keyframes (interpolation kind, ease, spatial tangents), time remapping, masks (mode,
+//! inverted, path with keyframes, feather, opacity, expansion), and effects with their
+//! settings: sliders, angles, checkboxes, pop-ups, colours and points with their keyframes,
+//! plus the private data of Levels and Curves (`settings`). An effect with a setting that
+//! could not be carried over is added switched off, and the setting is named.
 //!
 //! **What is not, yet** (each is listed in [`ImportResult::warnings`] when a project uses it):
-//! effect settings (effects are added switched off), text settings beyond the text itself, its
-//! fonts, sizes and fill colours, shape layer contents, camera and light options, layer styles, expressions, markers, audio levels,
+//! effect settings of kinds not listed above (layer choosers, other effects' private data),
+//! text settings beyond the text itself, its fonts, sizes and fill colours, shape layer
+//! contents, camera and light options, layer styles, expressions, markers, audio levels,
 //! separated position dimensions, orientation, fractional time stretch.
 //!
 //! Keyframe times in the file are layer time, which is EffectCraft's convention too.
@@ -28,6 +35,7 @@ mod effects_table;
 mod import;
 pub mod read;
 pub mod rifx;
+mod settings;
 mod text;
 
 pub use import::{FootageRef, ImportResult, import};
