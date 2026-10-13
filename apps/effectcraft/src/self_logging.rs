@@ -56,10 +56,12 @@ pub fn start(backends: Option<eframe::wgpu::Backends>) {
     r.add("screens", "screens and window", "known when the window opens: the \"decision: window:\" or \"window:\" lines after this report");
     report::folders(&mut r, settings.as_deref());
     r.add_switches(report::SWITCH_PREFIXES, report::SECRET_SWITCHES);
-    r.add_helpers();
+    // the window must not wait for `ffmpeg -version`: its line follows the report when it comes
+    r.add_helpers_later();
     report::previous_run(&mut r, &logs, &logs.join(report::PREVIOUS_LOG_FILE));
     report::logs(&mut r, &logs);
     r.log(module_path!());
+    let _ = craft_log::report::log_helpers_in_background(module_path!());
 }
 
 /// The window exists (in eframe's app creator, after `window::restore`): after a few frames,
