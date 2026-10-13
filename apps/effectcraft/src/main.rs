@@ -188,6 +188,7 @@ fn main() -> eframe::Result {
             // Fit the window to its monitor, or put it back where it was (still hidden).
             let saved_window = session.config.as_deref().and_then(window::load);
             let opened = cc.winit_window().map(|w| window::restore(w, saved_window));
+            self_logging::window_check(cc, opened); // ours
             let recovery = if control_port.is_none() { session.begin_recovery() } else { None };
             let project = files.iter().find(|f| is_project_file(f)).cloned();
             if let Some(p) = project {

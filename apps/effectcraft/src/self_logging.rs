@@ -5,8 +5,12 @@
 //! (same `Logs/effectcraft.log`, same rotation, format and size cap); craft-log wraps it to add
 //! the build line, `CRAFT_LOG`, the repeat collapse, the ring of recent lines and the stall watch.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use craft_log::report::Report;
 use effectcraft_engine::logging;
+
+use crate::window::{self, WindowGeometry};
 
 #[path = "self_logging_report.rs"]
 pub mod report;
@@ -14,6 +18,10 @@ pub mod report;
 /// EffectCraft, as craft-log names it.
 pub const APP: craft_log::App =
     craft_log::App { name: "effectcraft", version: env!("CARGO_PKG_VERSION"), ours: "effectcraft", default_filter: logging::DEFAULT_FILTER };
+
+/// The frame at which the window's size is compared with the size asked for: by then the
+/// compositor has configured the window (Wayland sends the size it decided after the first frame).
+const SIZE_CHECK_FRAME: u64 = 3;
 
 /// In place of `logging::install`: the same logger, wrapped, with the filter `CRAFT_LOG`,
 /// `RUST_LOG` or the default gives (the build line and the filter are its first two records).
@@ -53,3 +61,54 @@ pub fn start(backends: Option<eframe::wgpu::Backends>) {
     report::logs(&mut r, &logs);
     r.log(module_path!());
 }
+
+/// The window exists (in eframe's app creator, after `window::restore`): after a few frames,
+/// log the size the window system gave against the size asked for (`opened`, what `restore`
+/// asked). The size comes from the winit window: egui's `inner_rect` stays empty on Wayland,
+/// where a window has no position.
+pub fn window_check(cc: &eframe::CreationContext<'_>, opened: Option<WindowGeometry>) {
+    let asked = opened.map_or(window::DEFAULT_SIZE, |g| g.size);
+    let asked_max = opened.is_some_and(|g| g.maximized);
+    let window = cc.winit_window().cloned();
+    if window.is_none() {
+        log::info!("window: no window handle from eframe; the size it got is unknown");
+    }
+    let done = AtomicBool::new(false);
+    cc.egui_ctx.on_end_pass(
+        "self-logging-window-size",
+        std::sync::Arc::new(move |ui| {
+            let ctx = ui.ctx();
+            if ctx.cumulative_frame_nr() < SIZE_CHECK_FRAME || done.swap(true, Ordering::Relaxed) {
+                return;
+            }
+            let Some(w) = &window else { return };
+            let (inner, scale) = (w.inner_size(), w.scale_factor());
+            let l = inner.to_logical::<f64>(scale);
+            let got = [l.width as f32, l.height as f32];
+            let (maximized, full) = (w.is_maximized(), w.fullscreen().is_some());
+            let ppp = ctx.input(|i| i.viewport().native_pixels_per_point);
+            let monitor = match w.current_monitor() {
+                Some(m) => format!("on \"{}\"", m.name().unwrap_or_else(|| "unnamed".into())),
+                None => "the window system does not say which screen holds it".to_owned(),
+            };
+            let text = format!(
+                "window: asked {}x{} points{}, got {:.0}x{:.0} points after {SIZE_CHECK_FRAME} frames ({}x{} pixels, scale {scale}, maximized {maximized}, full screen {full}, egui pixels per point {}; {monitor})",
+                asked[0],
+                asked[1],
+                if asked_max { " maximized" } else { "" },
+                got[0],
+                got[1],
+                inner.width,
+                inner.height,
+                ppp.map_or_else(|| "unknown".to_owned(), |p| p.to_string()),
+            );
+            let differs = (got[0] - asked[0]).abs() > 1.0 || (got[1] - asked[1]).abs() > 1.0;
+            if asked_max != maximized || (!asked_max && differs) {
+                log::warn!("decision: {text}: the window system fitted, clamped or (un)maximized it");
+            } else {
+                log::info!("{text}");
+            }
+        }),
+    );
+}
+

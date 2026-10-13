@@ -7,6 +7,8 @@ use effectcraft_engine::config::ConfigStore;
 use serde::{Deserialize, Serialize};
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 
+#[path = "self_logging_window.rs"] mod self_logging; // ours
+
 const FILE: &str = "window.json";
 const MAX_BYTES: usize = 4096;
 /// Seconds a window opened maximized gets to say so before its size is tracked.
@@ -132,6 +134,7 @@ pub fn restore(window: &winit::window::Window, saved: Option<WindowGeometry>) ->
     let monitors: Vec<Monitor> = handles.iter().map(|m| Monitor::new(m.position(), m.size(), m.scale_factor())).collect();
     let home = window.current_monitor().or_else(|| window.primary_monitor()).and_then(|c| handles.iter().position(|m| *m == c));
     let g = place(saved, &monitors, home);
+    self_logging::placed(&handles, &monitors, home, saved, &g); // ours
     if let Some([x, y]) = g.pos {
         window.set_outer_position(PhysicalPosition::new(x, y));
     }
