@@ -487,11 +487,11 @@ fn colorama(fg: &mut PropGroup, raw: &RawProp, out: &mut Outcome) -> bool {
         .map(|i| {
             let at = 8 * i;
             // The wheel closes on itself, so the last position is one step short of a full
-            // turn (0xffff of 0x10000). It is written out exactly: rounded down to 0.999 it
-            // left a band a thousandth wide in which near-white blended back towards the
-            // first stop, and a clipped highlight came out mid-grey.
+            // turn (0xffff of 0x10000). It is written to six decimals, rounded down: rounded
+            // to nearest it lands a hair above the phase of a full-intensity pixel
+            // (65535/65536), and with Interpolate Palette off white then takes the stop before.
             let pos = u32_at(b, at).min(0xffff) as f64 / 65_536.0;
-            let pos = format!("{}", (pos * 1_000_000.0).round() / 1_000_000.0);
+            let pos = format!("{}", (pos * 1_000_000.0).floor() / 1_000_000.0);
             let c = |k: usize| short(u8_at(b, at + 4 + k) as f64 / 255.0);
             if u8_at(b, at + 4) == 255 { format!("{pos}:{},{},{}", c(1), c(2), c(3)) } else { format!("{pos}:{},{},{},{}", c(1), c(2), c(3), c(0)) }
         })

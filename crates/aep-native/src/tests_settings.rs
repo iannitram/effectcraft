@@ -394,7 +394,7 @@ fn colorama_reads_its_output_cycle() {
     let g = effect_of(&p, &r, 0, 0);
     assert!(g.enabled, "{:?}", r.warnings);
     assert_eq!(g.prop("outputCycle/usePresetPalette").unwrap().value, Value::Enum(8));
-    assert_eq!(g.prop("outputCycle/palette").unwrap().value, Value::Str("0:0,0,0 0.999985:1,1,1,0.502".into()));
+    assert_eq!(g.prop("outputCycle/palette").unwrap().value, Value::Str("0:0,0,0 0.999984:1,1,1,0.502".into()));
     assert_eq!(g.prop("inputPhase/mode").unwrap().value, Value::Enum(0));
 
     // A count past the room for stops is not believed.
