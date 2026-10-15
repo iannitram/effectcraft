@@ -28,3 +28,13 @@ EffectCraft is a clean-room, open-source, pure-Rust motion graphics and visual e
 - For UI work, **look at the result**. Headless (no window, works while the user is busy on the machine): `cargo run -p effectcraft-ui-egui --example snapshot -- --out ui.png --step '{"method":"engine.execute","params":{"command":"layer.select","params":{"layers":["#2"]}}}'` (steps are control-channel requests; `--script steps.jsonl`; `{"method":"snap","params":{"path":…}}` for intermediate shots). Or drive the live app via the control channel and take `ui.screenshot` (needs the window visible on screen).
 - After Effects reference: drive AE via ExtendScript (`osascript -e 'tell application "Adobe After Effects 2026" to DoScriptFile "x.jsx"'`) and capture only AE's window (`screencapture -l <windowid>`); keep captures in `plan/aftereffects/ref/` (gitignored), never commit them, never capture the Home screen.
 - Parallel agents: separate git worktrees and `CARGO_TARGET_DIR=target/agent-<name>`; keep every `Cargo.toml` valid (the `crates/*` glob).
+
+## Agent skills
+
+### Issue tracker
+
+Reports are markdown files in the Software Depot's `apps/<App>/reports/`, not GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
