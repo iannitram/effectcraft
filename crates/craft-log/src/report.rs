@@ -56,14 +56,15 @@ impl Report {
         r.add("app", "build profile", crate::BUILD_PROFILE);
         r.add("app", "built on", crate::BUILD_DATE);
         r.add("app", "runs from", std::env::current_exe().map(|p| mask_home(&p.display().to_string())).unwrap_or_default());
-        r.add("system", "operating system", read("/etc/os-release").map(|t| os_name(&t)).unwrap_or_default());
+        let windows = cfg!(windows).then(|| windows_version_in_background(app.name)).flatten();
+        r.add("system", "operating system", read("/etc/os-release").map(|t| os_name(&t)).or(windows).unwrap_or_default());
         r.add("system", "kernel", read("/proc/sys/kernel/osrelease").map(|t| t.trim().to_owned()).unwrap_or_default());
         r.add("system", "architecture", format!("{} {}", std::env::consts::OS, std::env::consts::ARCH));
         r.add("system", "session", session(&|k| std::env::var(k).ok()));
         r.add("system", "locale", locale(&|k| std::env::var(k).ok()));
-        r.add("processor", "model", read("/proc/cpuinfo").map(|t| cpu_model(&t)).unwrap_or_default());
+        r.add("processor", "model", read("/proc/cpuinfo").map(|t| cpu_model(&t)).unwrap_or_else(|| windows_processor(&|k| std::env::var(k).ok())));
         r.add("processor", "threads", std::thread::available_parallelism().map(|n| n.to_string()).unwrap_or_default());
-        let mem = read("/proc/meminfo").map(|t| meminfo(&t)).unwrap_or_default();
+        let mem = read("/proc/meminfo").map(|t| meminfo(&t)).or_else(|| MEMORY.get().and_then(|f| f()).map(|(t, a)| (gib(t), gib(a)))).unwrap_or_default();
         r.add("memory", "total", mem.0);
         r.add("memory", "available", mem.1);
         r
@@ -208,6 +209,50 @@ pub fn probe_in_background(target: &'static str, probe: impl FnOnce() -> String 
             value
         })
         .ok()
+}
+
+/// Where an app that knows the machine's memory without `/proc` (Windows, macOS) tells the report:
+/// (total, available) in bytes.
+static MEMORY: std::sync::OnceLock<fn() -> Option<(u64, u64)>> = std::sync::OnceLock::new();
+
+/// Give the report a reader for the machine's (total, available) memory in bytes, for systems
+/// without `/proc/meminfo` (EffectCraft: its sysmem crate; PhotoCraft: winsafe). Once; later calls
+/// are ignored.
+pub fn set_memory_reader(read: fn() -> Option<(u64, u64)>) {
+    let _ = MEMORY.set(read);
+}
+
+/// Bytes as the report shows memory: `"62.5 GiB"`.
+pub fn gib(bytes: u64) -> String {
+    format!("{:.1} GiB", bytes as f64 / 1_073_741_824.0)
+}
+
+/// Windows: the processor as the system names it (`PROCESSOR_IDENTIFIER`, for example "AMD64
+/// Family 26 Model 112 Stepping 0, AuthenticAMD"), else empty (the report shows "unknown").
+pub fn windows_processor(env: &dyn Fn(&str) -> Option<String>) -> String {
+    env("PROCESSOR_IDENTIFIER").map(|v| v.trim().to_owned()).unwrap_or_default()
+}
+
+/// Windows: the version in `ver`'s output ("Microsoft Windows [Version 10.0.26100.4652]" gives
+/// "Windows 10.0.26100.4652"), else `None`.
+pub fn windows_version(ver: &str) -> Option<String> {
+    let v = ver.split("[Version ").nth(1)?.split(']').next()?.trim();
+    (!v.is_empty()).then(|| format!("Windows {v}"))
+}
+
+/// Windows: the operating system's version is read by `cmd /c ver` on a background thread (a
+/// child process, so never in the way of a start) and logged when it arrives as
+/// `report: [system] operating system: …`; the report's field says so. `None` elsewhere, or when
+/// no thread could be started.
+fn windows_version_in_background(target: &'static str) -> Option<String> {
+    std::thread::Builder::new()
+        .name("craft-windows-version".into())
+        .spawn(move || {
+            let line = first_line_of(Path::new("cmd"), &["/c", "ver"], Duration::from_secs(3)).ok().and_then(|o| windows_version(&o));
+            log::info!(target: target, "report: [system] operating system: {}", line.as_deref().unwrap_or(UNKNOWN));
+        })
+        .ok()?;
+    Some("Windows (version read in the background: the \"report: [system] operating system:\" line after this report)".to_owned())
 }
 
 fn read(path: &str) -> Option<String> {
@@ -372,7 +417,7 @@ pub fn find_on_path(program: &str) -> Option<PathBuf> {
     std::env::split_paths(&path).flat_map(|d| names.iter().map(move |n| d.join(n))).find(|p| p.is_file())
 }
 
-/// Run `program args` and return the first line it printed, killing it after `timeout`. On
+/// Run `program args` and return the first line with text it printed, killing it after `timeout`. On
 /// Windows it runs without a console window (`CREATE_NO_WINDOW`), so a window app that asks
 /// flashes none.
 pub fn first_line_of(program: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
@@ -402,7 +447,8 @@ pub fn first_line_of(program: &Path, args: &[&str], timeout: Duration) -> Result
     if let Some(mut out) = child.stdout.take() {
         let _ = std::io::Read::read_to_string(&mut out, &mut text);
     }
-    text.lines().next().map(str::to_owned).filter(|l| !l.is_empty()).ok_or_else(|| "printed nothing".into())
+    // the first line with text (Windows' `ver` starts with an empty one)
+    text.lines().map(str::trim_end).find(|l| !l.trim().is_empty()).map(str::to_owned).ok_or_else(|| "printed nothing".into())
 }
 
 /// The most recently modified file in `dir` whose name `wanted` accepts.
@@ -480,6 +526,29 @@ mod tests {
         }
         // another user's folder whose name starts the same is not this home
         assert_eq!(mask_with("/home/deck_2/x /home/deck-old /home/deck9", home), "/home/deck_2/x /home/deck-old /home/deck9");
+    }
+
+    #[test]
+    fn windows_fields_come_from_the_environment_and_ver() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| move |k: &str| pairs.iter().find(|(a, _)| *a == k).map(|(_, v)| (*v).to_owned());
+        assert_eq!(
+            windows_processor(&env(&[("PROCESSOR_IDENTIFIER", "AMD64 Family 26 Model 112 Stepping 0, AuthenticAMD ")])),
+            "AMD64 Family 26 Model 112 Stepping 0, AuthenticAMD"
+        );
+        assert_eq!(windows_processor(&env(&[])), "");
+        assert_eq!(windows_version("\r\nMicrosoft Windows [Version 10.0.26100.4652]\r\n").as_deref(), Some("Windows 10.0.26100.4652"));
+        assert_eq!(windows_version("Microsoft Windows [Versión 10.0.19045.5965]"), None, "a translated word: no version");
+        assert_eq!(windows_version(""), None);
+        assert_eq!(gib(64 << 30), "64.0 GiB");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_report_on_windows_names_the_processor_and_the_version_line() {
+        let app = crate::App { name: "app", version: "1.0.0", ours: "app", default_filter: "warn" };
+        let r = Report::new(&app);
+        assert_ne!(r.get("processor", "model"), Some(UNKNOWN), "PROCESSOR_IDENTIFIER is always set on Windows");
+        assert!(r.get("system", "operating system").is_some_and(|v| v.starts_with("Windows")), "{:?}", r.get("system", "operating system"));
     }
 
     #[test]
