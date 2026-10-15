@@ -253,6 +253,7 @@ pub(crate) async fn webm(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut Sta
     };
 
     let mut batch = crate::in_flight::Batch::new(); // ours
+    let mut frames: Vec<Frame> = Vec::new();
     let mut i = 0;
     while i < total {
         let end = (i + batch.next()).min(total);
@@ -260,7 +261,6 @@ pub(crate) async fn webm(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut Sta
         // alpha side by side.
         let pixels: Vec<Vec<u8>> =
             job.frames(comp, (i..end).collect(), |_, img| job.pixels(&img, comp, if alpha { Channels::Rgba } else { colour_channels }, w, h)).await;
-        let mut frames: Vec<Frame> = Vec::with_capacity(pixels.len());
         for (j, px) in pixels.iter().enumerate() {
             let (color, a) = rayon::join(
                 || {
@@ -276,13 +276,17 @@ pub(crate) async fn webm(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut Sta
             );
             let k = i + j as u64;
             frames.push(Frame { ms: frame_ms(k), track: 1, key: color.key, prev_ms: (k > 0).then(|| frame_ms(k - 1)), data: color.data, alpha: a });
+            // Ours: a Cluster (with its audio) every AUDIO_BLOCK_FRAMES frames, not per batch.
+            if (k + 1).is_multiple_of(crate::AUDIO_BLOCK_FRAMES) || k + 1 == total {
+                let t_end = if k + 1 >= total { span_end } else { job.settings.frame_time(comp, k + 1) };
+                audio_until(t_end, &mut frames, k + 1 >= total);
+                let c = cluster(&mut frames);
+                file.write_all(&c).map_err(io)?;
+                seg_len += c.len() as u64;
+                frames.clear();
+            }
         }
         drop(pixels);
-        let t_end = if end >= total { span_end } else { job.settings.frame_time(comp, end) };
-        audio_until(t_end, &mut frames, end >= total);
-        let c = cluster(&mut frames);
-        file.write_all(&c).map_err(io)?;
-        seg_len += c.len() as u64;
         st.advance(end - i)?;
         i = end;
     }

@@ -614,11 +614,37 @@ fn wav_and_aiff_audio_only() {
     }
 }
 
+/// Ours: how many frames render at once never changes the sound either. The same export with a
+/// sound layer under pools of 2, 4 and 8 threads (batches of 2, 4 and 8 frames) is byte for byte
+/// the same file for an MP4 (AAC), a QuickTime (PCM) and a WebM (Opus). Audio used to be mixed and
+/// written (and a WebM Cluster closed) once per batch, so the file moved with the batch.
+#[test]
+fn frames_rendered_at_once_do_not_change_the_audio() {
+    let d = out_dir("in-flight-audio");
+    let wav = d.join("tone.wav");
+    write_tone(&wav, 2.0);
+    let (p, cid) = project(Some(&wav));
+    let media = MediaPool::new();
+    for (name, fmt) in [("mp4", OutputFormat::H264), ("mov", OutputFormat::ProRes), ("webm", OutputFormat::WebM)] {
+        let mut outputs: Vec<(usize, Vec<u8>)> = Vec::new();
+        for threads in [2, 4, 8] {
+            let path = d.join(format!("{threads}.{name}"));
+            let om = OutputModule { audio: AudioOutput::Auto, ..OutputModule::for_format(fmt) };
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let r = pool.install(|| run(&p, cid, &media, &om, &path));
+            assert!(r.audio, "{name}");
+            outputs.push((threads, std::fs::read(&path).unwrap()));
+        }
+        for (threads, out) in &outputs[1..] {
+            assert!(*out == outputs[0].1, "{name}: the output differs between {} and {threads} frames at once", outputs[0].0);
+        }
+    }
+}
+
 /// Ours: how many frames render at once (the batch: one per thread at most, fewer when memory is
 /// short) never changes the pictures. The same export under pools of 2 and 8 threads (batches of
-/// 2 and 8 frames) is byte for byte the same file for a movie and an image sequence; a WebM puts
-/// one Cluster per batch, so there the decoded frames (ffmpeg's `framemd5`, skipped without
-/// ffmpeg) are the same.
+/// 2 and 8 frames) is byte for byte the same file for a movie, an image sequence and a WebM (its
+/// Clusters close every `AUDIO_BLOCK_FRAMES` frames, not per batch).
 #[test]
 fn frames_rendered_at_once_do_not_change_the_output() {
     let (p, cid) = project(None);
@@ -634,18 +660,7 @@ fn frames_rendered_at_once_do_not_change_the_output() {
             let mut files: Vec<_> = std::fs::read_dir(&d).unwrap().map(|e| e.unwrap().path()).collect();
             files.sort();
             assert!(!files.is_empty() && r.bytes > 0, "{name}");
-            if fmt == OutputFormat::WebM {
-                let Ok(out) = Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(&files[0]).args(["-f", "framemd5", "-"]).output() else {
-                    eprintln!("SKIPPED: webm without ffmpeg");
-                    break;
-                };
-                assert!(out.status.success(), "{name}: ffmpeg");
-                // the frame lines only (the header names the input)
-                let frames: Vec<u8> = String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.starts_with('#')).collect::<Vec<_>>().join("\n").into_bytes();
-                outputs.push(vec![(std::ffi::OsString::from("frames"), frames)]);
-            } else {
-                outputs.push(files.iter().map(|f| (f.file_name().unwrap().to_owned(), std::fs::read(f).unwrap())).collect::<Vec<_>>());
-            }
+            outputs.push(files.iter().map(|f| (f.file_name().unwrap().to_owned(), std::fs::read(f).unwrap())).collect::<Vec<_>>());
         }
         if outputs.len() == 2 {
             assert!(outputs[0] == outputs[1], "{name}: the output differs between 2 and 8 frames at once");

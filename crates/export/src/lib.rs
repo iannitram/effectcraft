@@ -230,6 +230,11 @@ impl State<'_> {
     }
 }
 
+/// Ours: a movie's audio is mixed and written, and a WebM Cluster closed, every this many output
+/// frames, whatever the batch: batches follow the free memory, and audio cut at batch ends made the
+/// file (and, where mixing a span depends on its ends, the sound) differ with it.
+pub(crate) const AUDIO_BLOCK_FRAMES: u64 = 8;
+
 /// Frames per parallel batch (the most; [`in_flight::Batch`] sizes each batch to the free memory).
 pub(crate) fn batch_size() -> u64 {
     rayon::current_num_threads().clamp(2, 16) as u64
