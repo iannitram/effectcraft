@@ -373,7 +373,11 @@ pub fn mask_args_checked(args: &[String], secret_args: &[&str], looks_secret: &d
     let mut secrets: Vec<String> = env_secrets.to_vec();
     let mut hide_next = false;
     for a in args {
-        if std::mem::take(&mut hide_next) {
+        // the value after a secret flag is hidden, unless it is itself a secret flag
+        // (`--token --token s3cr3t`, `--token --token=s3cr3t`): then it is read as one, so the
+        // value after it is hidden too
+        let is_secret_flag = secret_args.contains(&a.as_str()) || a.split_once('=').is_some_and(|(f, _)| secret_args.contains(&f));
+        if std::mem::take(&mut hide_next) && !is_secret_flag {
             secrets.push(a.clone());
             shown.push(HIDDEN.to_owned());
             continue;
@@ -670,6 +674,21 @@ mod tests {
                 .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
                 .collect();
         assert_eq!(env_secret_values(&vars), ["tok-envsecret-123"]);
+    }
+
+    #[test]
+    fn a_secret_flag_where_its_value_should_be_does_not_hide_the_next_secret() {
+        let args: Vec<String> = ["prog", "--token", "--token", "s3cr3t", "--token", "--token=0th3r"].iter().map(|s| (*s).to_owned()).collect();
+        let (shown, secrets) = mask_args(&args, &["--token"]);
+        assert_eq!(shown.join(" "), "prog --token --token *** --token --token=***");
+        assert_eq!(secrets, ["s3cr3t", "0th3r"]);
+        // the app's own test sees every argument, two tokens side by side included
+        let (a, b) = ("a".repeat(64), "b".repeat(64));
+        let args: Vec<String> = ["prog", "serve", "--token", &a, &b].iter().map(|s| (*s).to_owned()).collect();
+        let hex64 = |v: &str| v.len() == 64 && v.bytes().all(|c| c.is_ascii_hexdigit());
+        let (shown, secrets) = mask_args_checked(&args, &["--token"], &hex64, &[]);
+        assert_eq!(shown.join(" "), "prog serve --token *** ***");
+        assert_eq!(secrets, [a, b]);
     }
 
     #[test]
