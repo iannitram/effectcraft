@@ -26,6 +26,10 @@ pub fn folder_of(path: &str) -> Option<String> {
     }
     let cut = path.rfind(['/', '\\'])?;
     let dir = &path[..cut];
+    // a UNC path needs `\\server\share` before the file: `\\p.ecproj` has no folder
+    if path.starts_with("\\\\") && !dir.get(2..).unwrap_or("").contains(['/', '\\']) {
+        return None;
+    }
     // the root itself: keep its separator ("/", "C:\")
     Some(if dir.is_empty() || dir.ends_with(':') { path[..=cut].to_string() } else { dir.to_string() })
 }
@@ -43,7 +47,8 @@ fn parts(p: &str) -> (String, Vec<&str>) {
     } else if p.starts_with('/') {
         "/".to_string()
     } else {
-        p[..2].to_string()
+        // `C:`; never slice past a short string (a lone `\` reached here and panicked)
+        p.get(..2).unwrap_or(p).to_string()
     };
     let body = &p[root.len().min(p.len())..];
     let names = body.split(['/', '\\']).filter(|c| !c.is_empty() && *c != ".").collect();
@@ -71,19 +76,19 @@ pub fn relative(file: &str, dir: &str) -> Option<Vec<String>> {
 }
 
 /// `rel` ([`relative`]) joined to the folder `dir`, written with `dir`'s separator.
-pub fn resolve(rel: &[String], dir: &str) -> String {
+pub fn resolve(rel: &[String], dir: &str) -> Option<String> {
     let sep = if dir.contains('\\') && !dir.contains('/') { '\\' } else { '/' };
     let (root, mut names) = parts(dir);
     let mut names: Vec<String> = names.drain(..).map(str::to_string).collect();
     for c in rel {
         if c == ".." {
-            names.pop();
+            names.pop()?;
         } else {
             names.push(c.clone());
         }
     }
     let root = if root == "/" { String::new() } else { root };
-    format!("{root}{sep}{}", names.join(&sep.to_string()))
+    Some(format!("{root}{sep}{}", names.join(&sep.to_string())))
 }
 
 /// Whether two folders are the same place (separators, a trailing separator and, for drive
@@ -95,6 +100,27 @@ fn same_folder(a: &str, b: &str) -> bool {
         if t.as_bytes().get(1) == Some(&b':') { t.to_lowercase() } else { t }
     };
     norm(a) == norm(b)
+}
+
+/// Bytes read from each end of a file for its fingerprint.
+const PRINT_SPAN: usize = 64 * 1024;
+
+/// A content fingerprint of the regular file `path` (FNV-1a over its size and its first and last
+/// [`PRINT_SPAN`] bytes, hex); `None` for a folder or anything unreadable.
+fn print(services: &dyn Services, path: &str) -> Option<String> {
+    if services.is_dir(path) {
+        return None;
+    }
+    let (size, _) = services.stamp(path)?;
+    let head = services.read_range(path, 0, PRINT_SPAN).ok()?;
+    let span = PRINT_SPAN as u64;
+    let tail = if size > 2 * span { services.read_range(path, size - span, PRINT_SPAN).ok()? } else { vec![] };
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in size.to_le_bytes().iter().chain(&head).chain(&tail) {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    Some(format!("{h:016x}"))
 }
 
 /// The file whose size stands for `f`: the first frame of a sequence, else its path.
@@ -125,8 +151,10 @@ pub fn anchor_for(p: &Project, path: &str, services: &dyn Services) -> Anchor {
         for f in main.into_iter().chain(it.proxy.as_ref().map(|x| &x.footage)) {
             if let Some(file) = sized_path(f)
                 && let Some((size, _)) = services.stamp(file)
+                && let Some(p) = print(services, file)
             {
                 anchor.saved_sizes.insert(file.to_string(), size);
+                anchor.saved_prints.insert(file.to_string(), p);
             }
         }
     }
@@ -141,14 +169,19 @@ pub fn follow(project: &mut Project, anchor: &Anchor, project_path: &str, servic
     if same_folder(saved, &now) {
         return 0;
     }
-    let moved = |path: &str| relative(path, saved).map(|rel| resolve(&rel, &now));
+    let moved = |path: &str| relative(path, saved).and_then(|rel| resolve(&rel, &now));
     let mut changed = 0;
     for f in footage_mut(project) {
         let Some(file) = sized_path(f).map(str::to_string) else { continue };
         let Some(cand) = moved(&file) else { continue };
-        let found = services.stamp(&cand).map(|(size, _)| size);
-        let wanted = anchor.saved_sizes.get(&file).copied();
-        if found.is_none() || (wanted.is_some() && found != wanted) || cand == file {
+        // The same file: a regular file with the recorded size AND fingerprint. Footage saved
+        // without them (older files) never follows: nothing proves what is at the place.
+        let (Some(&want_size), Some(want_print)) = (anchor.saved_sizes.get(&file), anchor.saved_prints.get(&file)) else { continue };
+        if cand == file || services.stamp(&cand).map(|(size, _)| size) != Some(want_size) {
+            continue;
+        }
+        if print(services, &cand).as_deref() != Some(want_print.as_str()) {
+            log::info!("decision: footage: \"{cand}\" beside the moved project is another file (fingerprint differs); \"{file}\" kept");
             continue;
         }
         // a sequence moves as one unit: every frame by the same relation
@@ -187,7 +220,9 @@ mod tests {
         assert_eq!(rel(r"D:\Stock\a.mov", r"C:\Shows\Ep1"), None, "another drive");
         assert_eq!(rel("/run/media/x/a.mov", "/home/sam/ep1"), None, "only the root in common");
         let r = relative(r"J:\Shows\Ep1\Footage\a.mov", r"J:\Shows\Ep1\Project").unwrap();
-        assert_eq!(resolve(&r, "/home/sam/Ep1/Project"), "/home/sam/Ep1/Footage/a.mov", "Windows to Linux");
+        assert_eq!(resolve(&r, "/home/sam/Ep1/Project").as_deref(), Some("/home/sam/Ep1/Footage/a.mov"), "Windows to Linux");
+        // more `..` than the folder has: refused, not stopped at the root
+        assert_eq!(resolve(&["..".into(), "..".into(), "a.mov".into()], "/ep1"), None);
         assert_eq!(folder_of("/shows/ep1/p.ecproj").as_deref(), Some("/shows/ep1"));
         assert_eq!(folder_of("p.ecproj"), None);
         assert!(same_folder(r"J:\Shows\Ep1\", "j:/Shows/Ep1"));
@@ -273,6 +308,50 @@ mod tests {
         assert_eq!(paths.iter().filter(|p| p.starts_with(&moved)).count(), 1 + 1 + 3 + 1, "movie, sequence (path and 3 frames), proxy: {paths:?}");
         assert!(paths.contains(&"/elsewhere/table.csv".to_string()), "Data footage is left alone");
         assert!(!s.is_dirty(), "following the folder is not an edit");
+    }
+
+    #[test]
+    fn short_and_odd_paths_do_not_panic() {
+        // the Legion Go's crash: `\\p.ecproj` gave the folder `\`, and parts sliced 2 bytes of 1
+        assert_eq!(folder_of(r"\\p.ecproj"), None);
+        assert_eq!(folder_of(r"\\srv\share\p.ecproj").as_deref(), Some(r"\\srv\share"));
+        for p in [r"\", "/", "C", "C:", r"\\", r"\\srv"] {
+            let _ = parts(p);
+            let _ = relative("/a/b.mov", p);
+            let _ = resolve(&["..".to_string(), "b.mov".to_string()], p);
+        }
+    }
+
+    #[test]
+    fn a_same_size_file_at_the_moved_place_is_not_taken() {
+        let root = tmp("same-size");
+        let (_, _path) = saved_show(&root);
+        std::fs::rename(root.join("Show"), root.join("Moved")).unwrap();
+        // a.mov beside the moved project: same 1000 bytes, other content
+        std::fs::write(root.join("Moved").join("Footage").join("a.mov"), vec![0u8; 1000]).unwrap();
+        let s = open(&root.join("Moved").join("Project").join("p.ecproj"));
+        let paths = all_paths(&s);
+        let old_movie = root.join("Show").join("Footage").join("a.mov").to_string_lossy().into_owned();
+        assert!(paths.contains(&old_movie), "a.mov keeps its old path: {paths:?}");
+    }
+
+    #[test]
+    fn footage_without_recorded_sizes_does_not_follow_even_to_a_folder() {
+        let root = tmp("no-sizes");
+        let (_, path) = saved_show(&root);
+        // an anchor with the folder but no sizes or fingerprints
+        let mut doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let o = doc.as_object_mut().unwrap();
+        assert!(o.remove("savedSizes").is_some() && o.remove("savedPrints").is_some(), "a save records both");
+        std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+        std::fs::rename(root.join("Show"), root.join("Moved")).unwrap();
+        let footage = root.join("Moved").join("Footage");
+        std::fs::write(footage.join("a.mov"), b"four").unwrap();
+        std::fs::remove_file(footage.join("a_proxy.mp4")).unwrap();
+        std::fs::create_dir(footage.join("a_proxy.mp4")).unwrap();
+        let s = open(&root.join("Moved").join("Project").join("p.ecproj"));
+        let paths = all_paths(&s);
+        assert!(paths.iter().all(|p| !p.contains("Moved")), "nothing followed: {paths:?}");
     }
 
     #[test]

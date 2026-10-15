@@ -18,6 +18,10 @@ pub struct Anchor {
     pub saved_dir: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub saved_sizes: BTreeMap<String, u64>,
+    /// A content fingerprint of each of those files then (hex; size, first and last 64 KiB), so a
+    /// file of the same size at the same place is not taken for it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub saved_prints: BTreeMap<String, String>,
 }
 
 /// The anchor a project file was saved with; empty for older files and anything unreadable.
