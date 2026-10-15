@@ -417,6 +417,12 @@ mod tests {
     #[test]
     fn gate_leaves_x11_handed_sockets_and_gamescope_alone() {
         let env = |pairs: &'static [(&'static str, &'static str)]| move |name: &str| pairs.iter().find(|(k, _)| *k == name).map(|(_, v)| v.to_string());
+        if !cfg!(target_os = "linux") {
+            // elsewhere the window is always left to winit, whatever the environment says
+            assert_eq!(gate(env(&[("WAYLAND_DISPLAY", "wayland-0"), ("XDG_CURRENT_DESKTOP", "KDE")])), Some("not Linux"));
+            assert_eq!(gate(env(&[])), Some("not Linux"));
+            return;
+        }
         assert_eq!(gate(env(&[("WAYLAND_DISPLAY", "wayland-0"), ("XDG_CURRENT_DESKTOP", "KDE")])), None);
         assert!(gate(env(&[])).is_some());
         assert!(gate(env(&[("WAYLAND_DISPLAY", "")])).is_some());
