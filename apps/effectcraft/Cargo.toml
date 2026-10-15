@@ -30,6 +30,8 @@ log = { workspace = true }
 # Settings ▸ Appearance ▸ Sync with System: the XDG desktop portal's colour scheme. Already in
 # Cargo.lock (accesskit, through eframe), so it adds no new crates.
 zbus = "5.19"
+wayland-client = "0.31" # ours
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] } # ours
 
 [build-dependencies]
 # Icon + VERSIONINFO for effectcraft.exe; build.rs only uses it when targeting Windows.

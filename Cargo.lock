@@ -1161,6 +1161,8 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "wayland-client",
+ "wayland-protocols",
  "winit",
  "winresource",
  "zbus",

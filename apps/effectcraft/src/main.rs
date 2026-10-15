@@ -26,6 +26,7 @@ mod native_menu;
 // Built everywhere so it stays checked; only the macOS app uses it.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod sheet_dialogs;
+mod wayland_screen; // ours
 mod window;
 
 use effectcraft_ui_egui::EffectcraftApp;
