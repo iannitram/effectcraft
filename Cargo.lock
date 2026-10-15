@@ -1288,6 +1288,7 @@ dependencies = [
  "effectcraft-project",
  "effectcraft-raster",
  "effectcraft-render",
+ "effectcraft-sysmem",
  "effectcraft-time",
  "effectcraft-vp9enc",
  "filmcraft-aac",
@@ -1602,6 +1603,14 @@ dependencies = [
  "kurbo",
  "rayon",
  "roxmltree",
+]
+
+[[package]]
+name = "effectcraft-sysmem"
+version = "0.10.0"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
