@@ -8,13 +8,19 @@
 //! 10 GB less (the threads inside each frame keep the CPU busy).
 //!
 //! So [`Batch`] starts at what the free memory surely holds, measures what each frame in flight
-//! really costs (the process's peak resident memory over a batch, above where it began), and sizes
+//! really costs (the process's peak resident memory over a batch, above where it began, counted a
+//! quarter over), and sizes
 //! every later batch to fit the memory then free, between 1 and the ceiling: down when memory
 //! runs short, back up when it frees. Output is unchanged: frames are rendered and handed out in
 //! order whatever the batch size. Platforms without the readings keep the ceiling.
 
 /// Memory left free for the rest of the machine: the larger of this and a tenth of RAM.
 const RESERVE: u64 = 4 << 30;
+
+/// The measured cost of a frame is counted this many quarters over: frames differ, and the
+/// measurement is one batch behind (beside a 16 GB load, sizing on the bare cost left 3.3 GB free,
+/// below the reserve).
+const MARGIN_QUARTERS: u64 = 5;
 
 /// The first batch's guess of one frame's cost, before anything is measured: generous, so the
 /// first batch is small enough on any project (a 1080p frame of the intro above took 1.9 GB).
@@ -69,7 +75,7 @@ impl<P: Probe> Batch<P> {
             let cost = m.peak.saturating_sub(start) / n.max(1);
             self.per_frame = Some(self.per_frame.map_or(cost, |c| c.max(cost)));
         }
-        let size = fit(&m, self.per_frame.unwrap_or(FIRST_GUESS), self.ceiling);
+        let size = fit(&m, self.per_frame.map_or(FIRST_GUESS, |c| c / 4 * MARGIN_QUARTERS), self.ceiling);
         if self.last.is_none_or(|(n, _)| n != size) && size < self.ceiling {
             log::info!(
                 "decision: export: {size} frames at once, not {}: {} MB free, about {} MB per frame in flight{}",
@@ -166,19 +172,23 @@ mod tests {
                 vec![
                     // start: 40 GB free, first guess 2 GB a frame → 17 → 16 (ceiling)
                     mem(40, 1, 1),
-                    // the 16 frames peaked 31 GB above the start (≈1.9 GB each); 30 GB free → 13
+                    // the 16 frames peaked 31 GB above the start (≈1.9 GB each, 2.4 with the
+                    // margin); 30 GB free → 10
                     mem(30, 2, 32),
                     // another program took memory: 12 GB free → 3
-                    mem(12, 2, 26),
-                    // it let go: 42 GB free → back to the ceiling, never above
+                    mem(12, 2, 21),
+                    // it let go: 42 GB free → back up (2.5 GB a frame with the margin → 14)
                     mem(42, 2, 8),
+                    // more still: back to the ceiling, never above
+                    mem(45, 2, 4),
                 ],
                 0,
             ),
         );
         assert_eq!(b.next(), 16);
-        assert_eq!(b.next(), 13);
+        assert_eq!(b.next(), 10);
         assert_eq!(b.next(), 3);
+        assert_eq!(b.next(), 14);
         assert_eq!(b.next(), 16);
         // no readings: the ceiling
         assert_eq!(b.next(), 16);
