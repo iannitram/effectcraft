@@ -24,6 +24,7 @@ pub mod learn;
 pub mod links;
 pub mod logging;
 pub mod mask_track;
+pub mod media_anchor; // ours
 pub mod media_browser;
 pub mod media_cache;
 pub mod menus;

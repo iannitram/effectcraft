@@ -419,7 +419,9 @@ fn collect_files(s: &mut Session, p: &Value) -> Result<Value> {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "Untitled Project".into());
     let out = format!("{folder}/{stem}.ecproj");
-    s.services.write_file(&out, proj.to_json().as_bytes()).map_err(|e| EngineError::Other(format!("cannot write {out}: {e}")))?;
+    // ours: the full project file, anchored to the collect folder, so the folder can move whole
+    let text = proj.to_file_json_anchored(&Default::default(), &crate::media_anchor::anchor_for(&proj, &out, s.services.as_ref()))?;
+    s.services.write_file(&out, text.as_bytes()).map_err(|e| EngineError::Other(format!("cannot write {out}: {e}")))?;
     s.toast(format!("Collected {copied} file(s) into {folder}"));
     Ok(json!({"project": out, "copied": copied, "errors": errors}))
 }

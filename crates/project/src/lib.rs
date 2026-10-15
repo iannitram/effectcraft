@@ -36,6 +36,9 @@ pub const SCHEMA_VERSION: u32 = 2;
 /// The first schema in which effect positions are in effect space (see [`SCHEMA_VERSION`]).
 pub const SCHEMA_EFFECT_SPACE: u32 = 2;
 
+pub mod anchor; // ours
+pub use anchor::{Anchor, saved_anchor}; // ours
+
 /// The EffectCraft version, written into project files as `savedBy`.
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -1514,6 +1517,11 @@ impl Project {
     }
     /// [`Project::to_file_json`] that also records the open compositions ([`SavedView`]).
     pub fn to_file_json_with_view(&self, view: &SavedView) -> Result<String, ProjectError> {
+        self.to_file_json_anchored(view, &Anchor::default())
+    }
+    /// Ours: [`Project::to_file_json_with_view`] that also records where the file is saved
+    /// ([`Anchor`]), so footage can follow a moved project folder.
+    pub fn to_file_json_anchored(&self, view: &SavedView, anchor: &Anchor) -> Result<String, ProjectError> {
         #[derive(Serialize)]
         struct File<'a> {
             #[serde(rename = "savedBy")]
@@ -1521,9 +1529,11 @@ impl Project {
             #[serde(flatten)]
             view: &'a SavedView,
             #[serde(flatten)]
+            anchor: &'a Anchor,
+            #[serde(flatten)]
             project: &'a Project,
         }
-        let text = serde_json::to_string_pretty(&File { saved_by: APP_VERSION, view, project: self })
+        let text = serde_json::to_string_pretty(&File { saved_by: APP_VERSION, view, anchor, project: self })
             .map_err(|e| ProjectError::Invalid(format!("the project can't be saved: {e}")))?;
         Project::from_json(&text)
             .map_err(|e| ProjectError::Invalid(format!("the project can't be saved: it holds a value a project file can't store ({e})")))?;
