@@ -668,8 +668,10 @@ mod tests {
 
     #[test]
     fn only_long_non_path_values_of_secret_switches_are_hidden() {
+        // an absolute path as this system writes one (Windows: a drive letter)
+        let sock = if cfg!(windows) { r"C:\Users\sam\ssh-agent" } else { "/run/user/1000/ssh" };
         let vars: Vec<(String, String)> =
-            [("APP_TOKEN", "tok-envsecret-123"), ("SSH_AUTH_SOCK", "/run/user/1000/ssh"), ("APP_PASS", "short"), ("APP_DATA_DIR", "not-a-secret-at-all")]
+            [("APP_TOKEN", "tok-envsecret-123"), ("SSH_AUTH_SOCK", sock), ("APP_PASS", "short"), ("APP_DATA_DIR", "not-a-secret-at-all")]
                 .iter()
                 .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
                 .collect();
