@@ -1,11 +1,14 @@
 //! EffectCraft desktop app.
 //!
-//! Usage: `effectcraft [--control <port>] [--demo|--empty|--home] [--] [project.ecproj | media files…]`
+//! Usage: `effectcraft [--control <port>] [--comp <id|name>] [--demo|--empty|--home] [--] [project.ecproj | media files…]`
 //!
 //! An unknown option or a bad port prints an error and exits with status 1 before anything starts.
 //!
 //! Without a project the app starts with an empty Untitled Project, as After Effects does;
 //! `--demo` opens the demo project instead (also Help ▸ Open Demo Project).
+//!
+//! `--comp <id|name>` (ours, live linking from FilmCraft) opens that composition of the project
+//! given, by id first, then by name.
 //!
 //! `--control <port>` (or `EFFECTCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control server;
 //! see `effectcraft_ui_egui::control` for the methods.
@@ -70,6 +73,8 @@ struct Args {
     demo: bool,
     /// Show or skip the Home screen (`--home`), else the Startup preference decides.
     home: Option<bool>,
+    /// The composition to open in the project given (`--comp <id|name>`; ours, live linking).
+    comp: Option<String>,
 }
 
 /// Parse the arguments after the program name; `Ok(None)` for `--version`. `env_port` is
@@ -90,7 +95,9 @@ fn parse_args(args: impl IntoIterator<Item = String>, env_port: Result<String, s
             "--demo" => out.demo = true,
             "--empty" => out.demo = false,
             "--home" => out.home = Some(true),
+            "--comp" => out.comp = Some(comp_value(args.next().as_deref().unwrap_or(""))?), // ours
             "--version" => return Ok(None),
+            _ if a.starts_with("--comp=") => out.comp = Some(comp_value(&a["--comp=".len()..])?), // ours
             _ => match a.strip_prefix("--control=") {
                 Some(v) => out.control_port = Some(control_port("--control", Some(v))?),
                 // macOS LaunchServices may pass a process serial number (`-psn_0_1234`), notably on
@@ -112,6 +119,20 @@ fn parse_args(args: impl IntoIterator<Item = String>, env_port: Result<String, s
     Ok(Some(out))
 }
 
+/// Ours: `--comp`'s value, a composition id or name (not empty).
+fn comp_value(v: &str) -> Result<String, String> {
+    if v.is_empty() { Err("--comp needs a composition id or name".into()) } else { Ok(v.to_string()) }
+}
+
+/// Ours (live linking): `--comp <id|name>` opens that composition, by id first, then by name.
+fn open_comp_flag(session: &mut effectcraft_engine::Session, comp: &str) {
+    let by_id = comp.parse::<u64>().ok().map(|id| session.execute("comp.open", json!({"comp": id})));
+    match by_id.filter(Result::is_ok).unwrap_or_else(|| session.execute("comp.open", json!({"comp": comp}))) {
+        Ok(_) => log::info!("decision: link: opened composition `{comp}` (--comp)"),
+        Err(e) => log::warn!("decision: link: --comp `{comp}`: {e}; the project opens on its last comp"),
+    }
+}
+
 /// A control-channel port from 1 to 65535 (0 would listen on a port nobody is told); `name` is
 /// the flag or variable it came from.
 fn control_port(name: &str, value: Option<&str>) -> Result<u16, String> {
@@ -128,7 +149,7 @@ fn main() -> eframe::Result {
     // feed the compatibility report.
     effectcraft_engine::logging::install();
     effectcraft_engine::logging::install_panic_hook();
-    let Args { control_port, files, demo, home } = match parse_args(std::env::args().skip(1), std::env::var("EFFECTCRAFT_CONTROL_PORT")) {
+    let Args { control_port, files, demo, home, comp } = match parse_args(std::env::args().skip(1), std::env::var("EFFECTCRAFT_CONTROL_PORT")) {
         Ok(Some(args)) => args,
         Ok(None) => {
             println!("effectcraft {}", env!("CARGO_PKG_VERSION"));
@@ -232,6 +253,8 @@ fn main() -> eframe::Result {
             if let Some(p) = project {
                 if let Err(e) = session.execute("file.open", json!({"path": p})) {
                     log::warn!("{p}: {e}");
+                } else if let Some(c) = &comp {
+                    open_comp_flag(&mut session, c); // ours
                 }
             } else if demo {
                 let _ = session.execute("file.openDemoProject", json!({}));
@@ -288,7 +311,8 @@ fn main() -> eframe::Result {
                     .add_filter("Projects", &["ecproj", "ecprojx", "aep", "aet"])
                     .add_filter("EffectCraft Project", &["ecproj", "ecprojx"])
                     .add_filter("After Effects Project", &["aep", "aet"])
-                    .pick_file().map(|p| p.to_string_lossy().to_string())
+                    .pick_file()
+                    .map(|p| p.to_string_lossy().to_string())
             }));
             app.hooks.system_theme = appearance::service();
             app.hooks.audio_device = Some(Box::new(audio_out::open));
@@ -488,6 +512,17 @@ mod tests {
 
     fn fails(args: &[&str]) -> String {
         parse_env(args, Err(VarError::NotPresent)).unwrap_err()
+    }
+
+    #[test]
+    fn comp_names_the_composition_to_open() {
+        assert_eq!(parse(&["--comp", "12", "t.ecproj"]).unwrap().comp.as_deref(), Some("12"));
+        assert_eq!(parse(&["--comp=Lower Third", "t.ecproj"]).unwrap().comp.as_deref(), Some("Lower Third"));
+        assert_eq!(parse(&["t.ecproj"]).unwrap().comp, None);
+        assert!(fails(&["--comp"]).contains("--comp needs"));
+        assert!(fails(&["--comp="]).contains("--comp needs"));
+        // after `--`, it is a file
+        assert_eq!(parse(&["--", "--comp"]).unwrap().files, ["--comp"]);
     }
 
     #[cfg(target_os = "linux")]
