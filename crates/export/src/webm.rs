@@ -19,7 +19,7 @@ use effectcraft_project::render_queue::{AudioFormat, Channels};
 use effectcraft_time::{TICKS_PER_SECOND, Tick};
 
 use crate::encode::{mix, pcm_bytes};
-use crate::{Cx, Report, Result, State, batch_size, io, wants_audio};
+use crate::{Cx, Report, Result, State, io, wants_audio};
 
 pub(crate) const OPUS_RATE: u32 = 48_000;
 
@@ -252,10 +252,10 @@ pub(crate) async fn webm(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut Sta
         }
     };
 
-    let batch = batch_size();
+    let mut batch = crate::in_flight::Batch::new(); // ours
     let mut i = 0;
     while i < total {
-        let end = (i + batch).min(total);
+        let end = (i + batch.next()).min(total);
         // Frames render in parallel; the VP9 streams (inter-coded) encode in order, colour and
         // alpha side by side.
         let pixels: Vec<Vec<u8>> =

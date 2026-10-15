@@ -13,7 +13,7 @@ use effectcraft_time::{TICKS_PER_SECOND, Tick};
 use crate::encode::VideoEncoder;
 use crate::encode::mix;
 use crate::webm::{CLUSTER, EBML, INFO, OPUS_RATE, SEGMENT, TRACK_ENTRY, TRACKS, el, el_float, el_str, el_uint, id_bytes, opus_encoder, vint};
-use crate::{Cx, Report, Result, State, batch_size, io, wants_audio};
+use crate::{Cx, Report, Result, State, io, wants_audio};
 
 struct Block {
     ms: i64,
@@ -132,7 +132,7 @@ pub(crate) async fn webm_av1(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut
         }
     };
 
-    let batch = batch_size();
+    let mut batch = crate::in_flight::Batch::new(); // ours
     let mut i = 0;
     let flush_blocks = |blocks: &mut Vec<Block>, file: &mut crate::out::Out, seg_len: &mut u64| -> Result<()> {
         if !blocks.is_empty() {
@@ -145,7 +145,7 @@ pub(crate) async fn webm_av1(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut
     };
     let mut blocks = vec![];
     while i < total {
-        let end = (i + batch).min(total);
+        let end = (i + batch.next()).min(total);
         // RGB, or the alpha matte alone (Channels: Alpha); AV1 in WebM carries no alpha track.
         let channels = if job.output.channels == Channels::Alpha { Channels::Alpha } else { Channels::Rgb };
         let frames: Vec<Vec<u8>> = job.frames(comp, (i..end).collect(), |_, img| job.pixels(&img, comp, channels, w, h)).await;

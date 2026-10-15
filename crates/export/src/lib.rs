@@ -34,6 +34,7 @@
 
 mod encode;
 mod hevc_av1;
+mod in_flight; // ours
 mod out;
 mod pipeline;
 mod uncompressed;
@@ -229,7 +230,7 @@ impl State<'_> {
     }
 }
 
-/// Frames per parallel batch.
+/// Frames per parallel batch (the most; [`in_flight::Batch`] sizes each batch to the free memory).
 pub(crate) fn batch_size() -> u64 {
     rayon::current_num_threads().clamp(2, 16) as u64
 }
@@ -259,11 +260,11 @@ async fn sequence(cx: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut State<'_>) 
         Channels::Rgba if !fmt.supports_alpha() => Channels::Rgb,
         c => c,
     };
-    let batch = batch_size();
+    let mut batch = in_flight::Batch::new(); // ours
     let mut bytes = 0u64;
     let mut i = 0;
     while i < st.total {
-        let end = (i + batch).min(st.total);
+        let end = (i + batch.next()).min(st.total);
         let ks: Vec<u64> = (i..end).filter(|k| !(cx.settings.skip_existing && out::exists(cx.sink, &sequence_path(cx.path, f0 + *k as i64)))).collect();
         let written: Vec<Result<u64>> = cx
             .frames(comp, ks, |k, img| {
@@ -369,10 +370,10 @@ async fn gif_export(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut State<'_
     let cs_per_frame = 100.0 * rate.den as f64 / rate.num as f64;
     let mut clock = 0.0f64;
     let mut emitted = 0u64;
-    let batch = batch_size();
+    let mut batch = in_flight::Batch::new(); // ours
     let mut i = 0;
     while i < st.total {
-        let end = (i + batch).min(st.total);
+        let end = (i + batch.next()).min(st.total);
         let frames: Vec<gif::Frame<'static>> = job
             .frames(comp, (i..end).collect(), |_, img| {
                 let mut px = job.pixels(&img, comp, job.output.channels, w, h);
