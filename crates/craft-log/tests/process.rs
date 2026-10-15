@@ -22,6 +22,7 @@ fn main() {
         ("a_fifo_in_place_of_the_log_does_not_hang", a_fifo_in_place_of_the_log_does_not_hang),
         ("many_runs_at_once_on_a_full_log_lose_nothing", many_runs_at_once_on_a_full_log_lose_nothing),
         ("a_secret_argument_is_never_logged", a_secret_argument_is_never_logged),
+        ("a_url_password_or_a_secret_switchs_value_is_never_logged", a_url_password_or_a_secret_switchs_value_is_never_logged),
     ];
     let filter = std::env::args().skip(1).find(|a| !a.starts_with('-'));
     let mut failed = Vec::new();
@@ -60,6 +61,13 @@ fn child(role: &str) {
             let _ = craft_log::cli::install(&APP, dir.as_deref(), &["--token"]);
             log::warn!(target: "app", "connecting with s3cr3t-value");
             craft_log::cli::failed(&APP, "the server refused other-secret");
+            std::process::exit(1);
+        }
+        "echo-fail" => {
+            // the program echoes its arguments into its error, as a failing import does
+            let _ = craft_log::cli::install(&APP, dir.as_deref(), &[]);
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            craft_log::cli::failed(&APP, &format!("not found: {}", args.join(", ")));
             std::process::exit(1);
         }
         "capture-panic" => {
@@ -233,4 +241,23 @@ fn a_secret_argument_is_never_logged() {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// Arguments nobody named as secret: a URL's password, a token used as a URL's user name, and a
+/// stray argument equal to a secret environment switch's value never reach the log, in the
+/// command line or in the failing run's error.
+fn a_url_password_or_a_secret_switchs_value_is_never_logged() {
+    let dir = temp_dir("url-env");
+    let out = me("echo-fail", &dir)
+        .args(["import", "https://sam:hunter22pw@example.com/a.mp4", "https://ghp_tokenuser1@example.com/b", "tok-envsecret-123"])
+        .env("APP_SERVICE_TOKEN", "tok-envsecret-123")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let log = std::fs::read_to_string(dir.join("app-cli.log")).unwrap();
+    for s in ["hunter22pw", "ghp_tokenuser1", "tok-envsecret-123"] {
+        assert!(!log.contains(s), "{s}: {log}");
+    }
+    assert!(log.contains("import https://sam:***@example.com/a.mp4 https://***@example.com/b ***"), "{log}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

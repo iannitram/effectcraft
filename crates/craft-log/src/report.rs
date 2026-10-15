@@ -345,10 +345,12 @@ pub fn locale(env: &dyn Fn(&str) -> Option<String>) -> String {
 pub const SECRET_SET: &str = "set (***)";
 
 /// Whether a switch's name says it holds a secret (`…TOKEN…`, `…SECRET…`, `…PASSWORD…`,
-/// `…PASSWD…`, `…CREDENTIAL…`, `…API_KEY…`, `…AUTH…`), a guard for switches nobody listed.
+/// `…PASSWD…`, `…CREDENTIAL…`, `…API_KEY…`, `…APIKEY…`, `…AUTH…`, `…BEARER…`, `…COOKIE…`,
+/// `…PRIVATE_KEY…`, or ending `_KEY`, `_PASS`, `_PWD`), a guard for switches nobody listed.
 pub fn is_secret_name(name: &str) -> bool {
     let n = name.to_ascii_uppercase();
-    ["TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "API_KEY", "AUTH"].iter().any(|w| n.contains(w))
+    ["TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "API_KEY", "APIKEY", "AUTH", "BEARER", "COOKIE", "PRIVATE_KEY"].iter().any(|w| n.contains(w))
+        || ["_KEY", "_PASS", "_PWD"].iter().any(|w| n.ends_with(w))
 }
 
 /// The switches among `vars`: `CRAFT_*`, `RUST_LOG`, and names starting with one of `prefixes`,
@@ -534,6 +536,16 @@ mod tests {
         assert!(!got.iter().any(|l| l.contains("s3cr3t-value") || l.contains("hunter2")), "{got:?}");
         // named in the list, or by its name
         assert_eq!(got, ["APP_CONTROL_TOKEN=set (***)", "APP_DATA_DIR=/d", "APP_REMOTE=set (***)"]);
+    }
+
+    #[test]
+    fn secret_names_beyond_token_and_password_are_caught() {
+        for name in ["APP_APIKEY", "APP_SIGNING_KEY", "APP_DB_PASS", "APP_SMTP_PWD", "APP_BEARER", "APP_COOKIE", "APP_PRIVATE_KEY_PEM"] {
+            assert!(is_secret_name(name), "{name}");
+        }
+        for name in ["APP_DATA_DIR", "APP_KEYFRAMES", "APP_BYPASS_CACHE", "APP_PASSES", "WGPU_BACKEND"] {
+            assert!(!is_secret_name(name), "{name}");
+        }
     }
 
     #[test]

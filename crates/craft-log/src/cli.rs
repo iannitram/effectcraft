@@ -323,13 +323,22 @@ pub fn hide_secrets(text: &str) -> String {
 /// every later line it appears in, in the file (text or JSON), in the copy on standard error, and in
 /// a failing run's error. Returns `None` when another logger was installed first.
 pub fn install(app: &App, log_dir: Option<&Path>, secret_args: &[&str]) -> Option<&'static CliLogger> {
+    install_checked(app, log_dir, secret_args, &|_| false)
+}
+
+/// [`install`], with the app's own test of an argument that is a secret wherever it stands
+/// (PhotoCraft's control token: exactly 64 hex digits). Beyond `secret_args` and `looks_secret`,
+/// every run also hides a password in a URL's user part (`https://sam:***@host/`) and any
+/// argument or later text equal to the value of a secret environment switch ([`env_secret_values`]).
+pub fn install_checked(app: &App, log_dir: Option<&Path>, secret_args: &[&str], looks_secret: &dyn Fn(&str) -> bool) -> Option<&'static CliLogger> {
     let (spec, source) = filter::spec_from_env(app.ours, app.default_filter);
     let filter = Filter::parse(&spec);
     let max = filter.max().max(LevelFilter::Info);
     let stderr = matches!(std::env::var("CRAFT_LOG_STDERR").ok().as_deref().map(str::trim), Some("1" | "true" | "yes"));
     let file = log_dir.and_then(|d| open(d, app.name).ok());
     let args: Vec<String> = std::env::args_os().map(|a| a.to_string_lossy().into_owned()).collect();
-    let (shown, secrets) = mask_args(&args, secret_args);
+    let vars: Vec<(String, String)> = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.to_string_lossy().into_owned()))).collect();
+    let (shown, secrets) = mask_args_checked(&args, secret_args, looks_secret, &env_secret_values(&vars));
     let logger = CLI.get_or_init(|| CliLogger::new(filter, filter::json_from_env(), stderr, file).with_secrets(secrets));
     log::set_logger(logger).ok()?;
     log::set_max_level(max);
@@ -352,8 +361,16 @@ pub fn installed() -> Option<&'static CliLogger> {
 /// argument that is not Unicode, a Latin-1 file name on Linux, turning a usage error into a
 /// crash); the program's own handling of its arguments is not touched.
 pub fn mask_args(args: &[String], secret_args: &[&str]) -> (Vec<String>, Vec<String>) {
+    mask_args_checked(args, secret_args, &|_| false, &[])
+}
+
+/// [`mask_args`], also hiding: an argument (or a `--flag=` value) that `looks_secret` says is
+/// one, wherever it stands; a URL's password (`scheme://user:password@`, or its whole user part
+/// when it has no password, `https://<token>@host`); and every one of `env_secrets` (the values of
+/// secret environment switches) wherever it appears. The secrets found come back with `env_secrets`.
+pub fn mask_args_checked(args: &[String], secret_args: &[&str], looks_secret: &dyn Fn(&str) -> bool, env_secrets: &[String]) -> (Vec<String>, Vec<String>) {
     let mut shown = Vec::with_capacity(args.len());
-    let mut secrets = Vec::new();
+    let mut secrets: Vec<String> = env_secrets.to_vec();
     let mut hide_next = false;
     for a in args {
         if std::mem::take(&mut hide_next) {
@@ -364,14 +381,46 @@ pub fn mask_args(args: &[String], secret_args: &[&str]) -> (Vec<String>, Vec<Str
         if secret_args.contains(&a.as_str()) {
             hide_next = true;
             shown.push(a.clone());
-        } else if let Some((flag, value)) = a.split_once('=').filter(|(f, _)| secret_args.contains(f)) {
+        } else if let Some((flag, value)) = a.split_once('=').filter(|(f, v)| secret_args.contains(f) || (f.starts_with('-') && looks_secret(v))) {
             secrets.push(value.to_owned());
             shown.push(format!("{flag}={HIDDEN}"));
+        } else if looks_secret(a) {
+            secrets.push(a.clone());
+            shown.push(HIDDEN.to_owned());
         } else {
+            secrets.extend(url_secret(a));
             shown.push(a.clone());
         }
     }
+    secrets.retain(|s| !s.is_empty());
+    secrets.dedup();
     (shown, secrets)
+}
+
+/// The secret part of the first URL in `arg` with a user part: its password
+/// (`https://sam:hunter2@host` gives `hunter2`), or the whole user part when it has none
+/// (`https://ghp_abc@host`, a token used as the user name).
+fn url_secret(arg: &str) -> Option<String> {
+    let rest = &arg[arg.find("://")? + 3..];
+    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    let user = &authority[..authority.rfind('@')?];
+    let secret = user.split_once(':').map_or(user, |(_, password)| password);
+    (!secret.is_empty()).then(|| secret.to_owned())
+}
+
+/// The shortest environment value [`env_secret_values`] hides: a shorter one would rewrite
+/// ordinary words in every line.
+pub const MIN_ENV_SECRET: usize = 8;
+
+/// The values of the environment's secret switches (named by [`crate::report::is_secret_name`],
+/// whatever their prefix), so that one also passed as an argument, or echoed in an error, is hidden
+/// in the log. Left alone: values shorter than [`MIN_ENV_SECRET`], and absolute paths
+/// (`SSH_AUTH_SOCK=/run/…` names a socket, not a secret).
+pub fn env_secret_values(vars: &[(String, String)]) -> Vec<String> {
+    vars.iter()
+        .filter(|(k, v)| crate::report::is_secret_name(k) && v.chars().count() >= MIN_ENV_SECRET && !Path::new(v).is_absolute())
+        .map(|(_, v)| v.clone())
+        .collect()
 }
 
 /// A command is about to exit with an error: log `reason` at error (so the log holds why), then
@@ -579,6 +628,48 @@ mod tests {
             let args = vec!["prog".to_owned(), arg.to_string_lossy().into_owned()];
             assert_eq!(mask_args(&args, &["--token"]).0.join(" "), "prog a\u{fffd}b");
         }
+    }
+
+    #[test]
+    fn url_passwords_env_secrets_and_the_apps_own_test_are_hidden() {
+        let args: Vec<String> = [
+            "prog",
+            "import",
+            "https://sam:hunter22pw@example.com/a.mp4",
+            "https://ghp_tokenuser1@example.com/b",
+            "tok-envsecret-123",
+            "--key=0123abcd",
+            "0123abcd",
+            "https://example.com/plain",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+        let hex = |a: &str| a.len() == 8 && a.bytes().all(|b| b.is_ascii_hexdigit());
+        let (shown, secrets) = mask_args_checked(&args, &[], &hex, &["tok-envsecret-123".to_owned()]);
+        assert_eq!(shown[5..], ["--key=***", "***", "https://example.com/plain"]);
+        for s in ["hunter22pw", "ghp_tokenuser1", "tok-envsecret-123", "0123abcd"] {
+            assert!(secrets.iter().any(|x| x == s), "{s} in {secrets:?}");
+        }
+        let dir = temp_dir("url-env");
+        let l = CliLogger::new(Filter::parse("info"), false, false, open(&dir, "app").ok()).with_secrets(secrets);
+        rec(&l, log::Level::Info, "app", &format!("command line: {}", shown.join(" ")));
+        rec(&l, log::Level::Error, "app", "import: https://sam:hunter22pw@example.com/a.mp4 and tok-envsecret-123: not found");
+        l.flush();
+        let text = std::fs::read_to_string(dir.join("app-cli.log")).unwrap();
+        assert!(["hunter22pw", "ghp_tokenuser1", "tok-envsecret-123", "0123abcd"].iter().all(|s| !text.contains(s)), "{text}");
+        assert!(text.contains("https://sam:***@example.com/a.mp4") && text.contains("https://***@example.com/b"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_long_non_path_values_of_secret_switches_are_hidden() {
+        let vars: Vec<(String, String)> =
+            [("APP_TOKEN", "tok-envsecret-123"), ("SSH_AUTH_SOCK", "/run/user/1000/ssh"), ("APP_PASS", "short"), ("APP_DATA_DIR", "not-a-secret-at-all")]
+                .iter()
+                .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
+                .collect();
+        assert_eq!(env_secret_values(&vars), ["tok-envsecret-123"]);
     }
 
     #[test]
