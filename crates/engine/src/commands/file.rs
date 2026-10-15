@@ -249,6 +249,8 @@ struct PendingImport {
     comps: Vec<u64>,
     items: Vec<u64>,
     errors: Vec<String>,
+    /// EffectCraft projects merged in (`file.importProject` results); never added to a comp.
+    projects: Vec<Value>,
 }
 
 /// Everything probing a file needs, apart from the session (it can run on a background thread).
@@ -374,13 +376,20 @@ fn prepare_import(s: &mut Session, p: &Value) -> Result<PendingImport> {
             _ => return Err(bad("file.import", "page: a page number from 1")),
         },
     };
-    let mut paths = paths;
     let mut comps = vec![];
     let mut items = vec![];
     let mut errors = vec![];
+    // EffectCraft projects import as projects, as After Effects imports an .aep.
+    let (project_paths, paths): (Vec<String>, Vec<String>) = paths.into_iter().partition(|x| super::import_project::is_project_path(x));
+    let mut projects = vec![];
+    for path in project_paths {
+        match s.execute("file.importProject", json!({"path": path})) {
+            Ok(r) => projects.push(r),
+            Err(e) => errors.push(format!("{path}: {e}")),
+        }
+    }
     // After Effects projects among the files are imported as projects, not probed as media.
-    let (aep_paths, media_paths): (Vec<String>, Vec<String>) = paths.into_iter().partition(|p| super::aep_native::is_aep_path(p));
-    paths = media_paths;
+    let (aep_paths, mut paths): (Vec<String>, Vec<String>) = paths.into_iter().partition(|p| super::aep_native::is_aep_path(p));
     for path in &aep_paths {
         match super::aep_native::import_file(s, path) {
             Ok(v) => {
@@ -441,13 +450,13 @@ fn prepare_import(s: &mut Session, p: &Value) -> Result<PendingImport> {
         page,
         psd_layer: p.get("layer").cloned(),
     };
-    Ok(PendingImport { sources, prober, comps, items, errors })
+    Ok(PendingImport { sources, prober, comps, items, errors, projects })
 }
 
 /// The last part of an import: add the probed files to the project (one undo step) and select
 /// everything the import made, so the Project panel shows it.
 fn add_footage(s: &mut Session, pending: PendingImport, probed: Vec<std::result::Result<Probed, String>>) -> Result<Value> {
-    let PendingImport { comps, mut items, mut errors, .. } = pending;
+    let PendingImport { comps, mut items, mut errors, projects, .. } = pending;
     let mut found = vec![];
     let mut warnings = vec![];
     for r in probed {
@@ -462,6 +471,11 @@ fn add_footage(s: &mut Session, pending: PendingImport, probed: Vec<std::result:
     let mut asked: Vec<u64> = vec![];
     let made: Vec<ItemId> = comps.iter().map(|c| ItemId(*c)).collect();
     if !found.is_empty() {
+        // The file may have been overwritten since an earlier import or project decoded it (the
+        // media layer keys frames by path): a fresh import reads it again (#1070).
+        for f in &found {
+            s.forget_decoded(&f.footage);
+        }
         s.edit("Import", None, |proj, st| {
             let mut selection = made;
             for f in found {
@@ -499,7 +513,11 @@ fn add_footage(s: &mut Session, pending: PendingImport, probed: Vec<std::result:
     if let Some(first) = asked.first() {
         s.events.push(crate::Event::Frontend { command: "file.interpretFootage".into(), params: json!({"item": first, "reason": "unlabeledAlpha"}) });
     }
-    Ok(json!({"items": items, "comps": comps, "errors": errors, "warnings": warnings, "unlabeledAlpha": asked}))
+    let mut out = json!({"items": items, "comps": comps, "errors": errors, "warnings": warnings, "unlabeledAlpha": asked});
+    if !projects.is_empty() {
+        out["projects"] = Value::Array(projects);
+    }
+    Ok(out)
 }
 
 /// Whether a file format states how its alpha is stored (PNG, GIF, WebP and PSD are straight by

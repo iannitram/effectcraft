@@ -170,6 +170,12 @@ pub(crate) fn import_file(s: &mut Session, path: &str) -> Result<Value> {
     let mut proj = (*s.project).clone();
     let res = import_into(s, &mut proj, path, &bytes)?;
     let items = res.items.clone();
+    // A fresh import reads its footage files again, as `file.import` does (#1070).
+    for id in &items {
+        if let Some(effectcraft_project::Item { kind: effectcraft_project::ItemKind::Footage(f), .. }) = proj.item(*id) {
+            s.forget_decoded(f);
+        }
+    }
     s.edit("Import After Effects Project", None, |p, st| {
         *p = proj;
         st.project_selection = items;
