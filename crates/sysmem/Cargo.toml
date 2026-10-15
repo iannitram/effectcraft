@@ -1,0 +1,19 @@
+# Ours (Z13 perf work, 2026-10-15): the machine's free memory and this process's resident size,
+# for the export's frames in flight (crates/export/src/in_flight.rs). It reads them straight from
+# the operating system, which needs `unsafe` on Windows and macOS, so this small crate does not
+# take the workspace lints (unsafe_code = "forbid"); the unsafe calls are in `os.rs` alone.
+[package]
+name = "effectcraft-sysmem"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_SystemInformation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"

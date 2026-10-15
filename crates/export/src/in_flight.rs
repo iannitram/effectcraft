@@ -35,8 +35,11 @@ pub(crate) struct Memory {
     pub total: u64,
     /// This process's resident memory now.
     pub resident: u64,
-    /// This process's peak resident memory since the last [`Probe::reset_peak`].
+    /// This process's peak resident memory since the last [`Probe::reset_peak`], or since it
+    /// started where the peak cannot be reset (`peak_resets` false: Windows, macOS).
     pub peak: u64,
+    /// Whether [`Probe::reset_peak`] starts a new peak.
+    pub peak_resets: bool,
 }
 
 /// Where the readings come from (the system, or a test's script).
@@ -54,6 +57,9 @@ pub(crate) struct Batch<P: Probe = System> {
     last: Option<(u64, u64)>,
     /// Bytes one frame in flight costs, once measured (the largest seen).
     per_frame: Option<u64>,
+    /// The highest peak seen so far: where the peak cannot be reset, only a batch that raised it
+    /// says what a frame costs.
+    peak_seen: u64,
 }
 
 impl Batch<System> {
@@ -65,16 +71,19 @@ impl Batch<System> {
 
 impl<P: Probe> Batch<P> {
     pub(crate) fn with_probe(ceiling: u64, probe: P) -> Self {
-        Self { ceiling: ceiling.max(1), probe, last: None, per_frame: None }
+        Self { ceiling: ceiling.max(1), probe, last: None, per_frame: None, peak_seen: 0 }
     }
 
     /// The size of the next batch; call it once before each batch is rendered.
     pub(crate) fn next(&mut self) -> u64 {
         let Some(m) = self.probe.read() else { return self.ceiling };
-        if let Some((n, start)) = self.last {
+        if let Some((n, start)) = self.last
+            && (m.peak_resets || m.peak > self.peak_seen)
+        {
             let cost = m.peak.saturating_sub(start) / n.max(1);
             self.per_frame = Some(self.per_frame.map_or(cost, |c| c.max(cost)));
         }
+        self.peak_seen = self.peak_seen.max(m.peak);
         let size = fit(&m, self.per_frame.map_or(FIRST_GUESS, |c| c / 4 * MARGIN_QUARTERS), self.ceiling);
         if self.last.is_none_or(|(n, _)| n != size) && size < self.ceiling {
             log::info!(
@@ -99,35 +108,18 @@ pub(crate) fn fit(m: &Memory, per_frame: u64, ceiling: u64) -> u64 {
     (spare / per_frame.max(1)).clamp(1, ceiling.max(1))
 }
 
-/// This machine's readings: Linux `/proc` (elsewhere none, and the ceiling stands).
+/// This machine's readings (`effectcraft-sysmem`: Linux, Windows, macOS; elsewhere none, and the
+/// ceiling stands).
 pub(crate) struct System;
 
 impl Probe for System {
-    #[cfg(target_os = "linux")]
     fn read(&mut self) -> Option<Memory> {
-        let kib = |text: &str, key: &str| -> Option<u64> {
-            let line = text.lines().find(|l| l.starts_with(key))?;
-            line[key.len()..].trim().trim_end_matches("kB").trim().parse::<u64>().ok().map(|k| k * 1024)
-        };
-        let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
-        let status = std::fs::read_to_string("/proc/self/status").ok()?;
-        Some(Memory {
-            available: kib(&meminfo, "MemAvailable:")?,
-            total: kib(&meminfo, "MemTotal:")?,
-            resident: kib(&status, "VmRSS:")?,
-            peak: kib(&status, "VmHWM:")?,
-        })
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    fn read(&mut self) -> Option<Memory> {
-        None
+        let r = effectcraft_sysmem::read()?;
+        Some(Memory { available: r.available, total: r.total, resident: r.resident, peak: r.peak, peak_resets: r.peak_resets })
     }
 
     fn reset_peak(&mut self) {
-        // "5" resets the peak resident size (VmHWM) to the current one (proc(5), clear_refs)
-        #[cfg(target_os = "linux")]
-        let _ = std::fs::write("/proc/self/clear_refs", "5");
+        effectcraft_sysmem::reset_peak();
     }
 }
 
@@ -150,7 +142,7 @@ mod tests {
     }
 
     fn mem(available: u64, resident: u64, peak: u64) -> Memory {
-        Memory { available: available * GB, total: 46 * GB, resident: resident * GB, peak: peak * GB }
+        Memory { available: available * GB, total: 46 * GB, resident: resident * GB, peak: peak * GB, peak_resets: true }
     }
 
     #[test]
@@ -202,11 +194,28 @@ mod tests {
     }
 
     #[test]
-    fn this_machine_gives_readings_or_none() {
-        let mut s = System;
-        if let Some(m) = s.read() {
-            assert!(m.total > 0 && m.available <= m.total && m.resident > 0 && m.peak >= m.resident / 2, "{m:?}");
-            s.reset_peak();
-        }
+    fn where_the_peak_cannot_be_reset_only_a_raised_peak_measures_a_frame() {
+        // Windows and macOS: the peak is the process's highest since it started
+        let fixed = |available, resident, peak| Memory { peak_resets: false, ..mem(available, resident, peak) };
+        let mut b = Batch::with_probe(
+            16,
+            Script(
+                vec![
+                    fixed(40, 1, 1),
+                    // the first batch raised the peak to 32: 31 GB over 16 frames (2.4 with the margin) → 10
+                    fixed(30, 2, 32),
+                    // the peak stayed at 32 (the 10 frames cost less): no new measurement → still 10
+                    fixed(30, 2, 32),
+                    // a batch raised it to 36 from 2 over 10 frames: 3.4 GB a frame (4.25 with the
+                    // margin): 30 GB free → 5
+                    fixed(30, 2, 36),
+                ],
+                0,
+            ),
+        );
+        assert_eq!(b.next(), 16);
+        assert_eq!(b.next(), 10);
+        assert_eq!(b.next(), 10);
+        assert_eq!(b.next(), 5);
     }
 }
