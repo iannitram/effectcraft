@@ -24,6 +24,7 @@ pub mod learn;
 pub mod links;
 pub mod logging;
 pub mod mask_track;
+pub mod media_anchor; // ours
 pub mod media_browser;
 pub mod media_cache;
 pub mod menus;
@@ -131,6 +132,13 @@ pub trait Services: Send + Sync {
     fn is_dir(&self, path: &str) -> bool {
         std::path::Path::new(path).is_dir()
     }
+    /// Ours: up to `len` bytes of a file from `offset` (fewer at its end), for footage
+    /// fingerprints ([`media_anchor`]). Hosts should override this: the default reads it whole.
+    fn read_range(&self, path: &str, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+        let b = self.read_file(path)?;
+        let a = (offset as usize).min(b.len());
+        Ok(b[a..(a + len).min(b.len())].to_vec())
+    }
 }
 
 /// Native filesystem.
@@ -141,6 +149,14 @@ impl Services for FsServices {
     }
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
         config::atomic_write(std::path::Path::new(path), data)
+    }
+    fn read_range(&self, path: &str, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+        use std::io::{Read, Seek};
+        let mut f = std::fs::File::open(path)?;
+        f.seek(std::io::SeekFrom::Start(offset))?;
+        let mut out = Vec::with_capacity(len);
+        f.take(len as u64).read_to_end(&mut out)?;
+        Ok(out)
     }
 }
 

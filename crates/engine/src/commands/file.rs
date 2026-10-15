@@ -50,8 +50,10 @@ pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
     let (mut proj, repaired) =
         Project::from_json_repaired(&text).map_err(|e| EngineError::Other(format!("{path} is not a project EffectCraft can open: {e}")))?;
     resolve_relative_footage(&mut proj, path, s.services.as_ref());
+    let followed = crate::media_anchor::follow(&mut proj, &effectcraft_project::saved_anchor(&text), path, s.services.as_ref()); // ours
     s.replace_project(proj, Some(path.to_string()));
     s.restore_view(&effectcraft_project::saved_view(&text));
+    crate::media_anchor::report(s, followed); // ours
     s.note_project_path(path);
     // Values past the limits (a corrupt or hostile file) were brought within them (#788).
     if !repaired.is_empty() {
@@ -102,7 +104,8 @@ fn resolve_relative_footage(p: &mut Project, project_path: &str, services: &dyn 
 /// project opened from an XML copy saves as XML again). Fails, writing nothing, when the project
 /// wouldn't read back.
 pub(crate) fn file_text(s: &Session, path: &str) -> Result<String> {
-    let json = s.project.to_file_json_with_view(&s.saved_view())?;
+    let anchor = crate::media_anchor::anchor_for(&s.project, path, s.services.as_ref()); // ours
+    let json = s.project.to_file_json_anchored(&s.saved_view(), &anchor)?;
     if crate::xml_project::is_xml_path(path) { crate::xml_project::to_xml(&json).map_err(EngineError::Other) } else { Ok(json) }
 }
 
