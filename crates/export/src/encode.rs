@@ -270,9 +270,9 @@ pub(crate) async fn movie(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut St
     // Encode the first batch before creating tracks: encoders finalise their config on frame 1.
     let first_end = batch.next().min(st.total);
     let first: Vec<Vec<u8>> = job.frames(comp, (0..first_end).collect(), render).await;
-    let mut pending = Vec::new();
+    let mut pending = Vec::new(); // ours: per frame, written on the audio grid below
     for (k, px) in first.iter().enumerate() {
-        pending.extend(venc.encode(px, k as u64)?);
+        pending.push(venc.encode(px, k as u64)?);
     }
     drop(first);
     st.advance(first_end)?;
@@ -353,17 +353,26 @@ pub(crate) async fn movie(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut St
     };
     let total = st.total;
     let frame_end_time = |k: u64| -> Tick { if k >= total { span_end } else { job.settings.frame_time(comp, k) } };
-    write_video(&mut mux, pending)?;
-    write_audio_until(&mut mux, frame_end_time(first_end), &mut cursor)?;
+    // Ours: audio goes in after every AUDIO_BLOCK_FRAMES frames, not after each batch, so the file
+    // is the same whatever the batch sizes were.
+    let mut frame_done = |mux: &mut Writer, k: u64, ps: Vec<Packet>, cursor: &mut i64| -> Result<()> {
+        write_video(mux, ps)?;
+        if (k + 1).is_multiple_of(crate::AUDIO_BLOCK_FRAMES) {
+            write_audio_until(mux, frame_end_time(k + 1), cursor)?;
+        }
+        Ok(())
+    };
+    for (k, ps) in pending.into_iter().enumerate() {
+        frame_done(&mut mux, k as u64, ps, &mut cursor)?;
+    }
     let mut i = first_end;
     while i < total {
         let end = (i + batch.next()).min(total);
         let frames: Vec<Vec<u8>> = job.frames(comp, (i..end).collect(), render).await;
         for (k, px) in frames.iter().enumerate() {
             let ps = venc.encode(px, i + k as u64)?;
-            write_video(&mut mux, ps)?;
+            frame_done(&mut mux, i + k as u64, ps, &mut cursor)?;
         }
-        write_audio_until(&mut mux, frame_end_time(end), &mut cursor)?;
         st.advance(end - i)?;
         i = end;
     }
