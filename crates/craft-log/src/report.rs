@@ -213,12 +213,15 @@ pub fn probe_in_background(target: &'static str, probe: impl FnOnce() -> String 
 
 /// Where an app that knows the machine's memory without `/proc` (Windows, macOS) tells the report:
 /// (total, available) in bytes.
-static MEMORY: std::sync::OnceLock<fn() -> Option<(u64, u64)>> = std::sync::OnceLock::new();
+static MEMORY: std::sync::OnceLock<MemoryReader> = std::sync::OnceLock::new();
+
+/// Reads the machine's (total, available) memory in bytes ([`set_memory_reader`]).
+pub type MemoryReader = fn() -> Option<(u64, u64)>;
 
 /// Give the report a reader for the machine's (total, available) memory in bytes, for systems
 /// without `/proc/meminfo` (EffectCraft: its sysmem crate; PhotoCraft: winsafe). Once; later calls
 /// are ignored.
-pub fn set_memory_reader(read: fn() -> Option<(u64, u64)>) {
+pub fn set_memory_reader(read: MemoryReader) {
     let _ = MEMORY.set(read);
 }
 
