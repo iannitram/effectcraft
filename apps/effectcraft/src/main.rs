@@ -127,8 +127,7 @@ fn control_port(name: &str, value: Option<&str>) -> Result<u16, String> {
 fn main() -> eframe::Result {
     // First, so the panic hook and every start-up warning are recorded. Records go to stderr
     // and the session log; Help ▸ Enable Logging writes through this logger too, and warnings
-    // feed the compatibility report.
-    self_logging::install(); // ours: upstream's logging::install, wrapped
+    // feed the compatibility report. (Ours: the logger itself comes after the arguments, below.)
     effectcraft_engine::logging::install_panic_hook();
     self_logging::crash_hook(); // ours
     let Args { control_port, files, demo, home } = match parse_args(std::env::args().skip(1), std::env::var("EFFECTCRAFT_CONTROL_PORT")) {
@@ -143,6 +142,10 @@ fn main() -> eframe::Result {
             std::process::exit(1);
         }
     };
+    // ours: upstream's logging::install, wrapped. After the arguments, so a bad command line prints
+    // only its message and writes nothing (upstream's tests/args.rs; SELF-LOGGING.md: logging never
+    // changes what the program does). The argument parser logs nothing, so no line is lost.
+    self_logging::install();
     // The session log lives in the settings folder (`Logs/effectcraft.log`, the previous two runs
     // kept): a launch from the Dock or a menu has no terminal. Opened after the arguments, so
     // `--version` leaves no file behind; records logged until now are written to it first.

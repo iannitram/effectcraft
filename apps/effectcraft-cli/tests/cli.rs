@@ -469,7 +469,10 @@ fn mcp_autosave_is_opt_in_and_rejects_invalid_combinations() {
     let mut client = McpChild::start(&config, false);
     client.tool("execute_command", json!({"command":"comp.new","params":{"name":"Ephemeral"}}));
     client.eof();
-    assert!(std::fs::read_dir(&config).unwrap().next().is_none());
+    // ours: nothing but the command-line log (self-logging's `Logs/effectcraft-cli.log`, by design
+    // in the settings folder) may be written without --autosave.
+    let written: Vec<_> = std::fs::read_dir(&config).unwrap().map(|e| e.unwrap().file_name()).filter(|n| n != "Logs").collect();
+    assert!(written.is_empty(), "wrote {written:?}");
     for args in [["mcp", "--autosave", "--bridge", "1"].as_slice(), ["info", "--autosave"].as_slice()] {
         let out = bin().args(args).env("EFFECTCRAFT_CONFIG_DIR", &config).output().unwrap();
         assert_eq!(out.status.code(), Some(2));
