@@ -293,7 +293,8 @@ fn main() -> eframe::Result {
                     .add_filter("Projects", &["ecproj", "ecprojx", "aep", "aet"])
                     .add_filter("EffectCraft Project", &["ecproj", "ecprojx"])
                     .add_filter("After Effects Project", &["aep", "aet"])
-                    .pick_file().map(|p| p.to_string_lossy().to_string())
+                    .pick_file()
+                    .map(|p| p.to_string_lossy().to_string())
             }));
             app.hooks.system_theme = appearance::service();
             app.hooks.audio_device = Some(Box::new(audio_out::open));

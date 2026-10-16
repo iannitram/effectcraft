@@ -64,7 +64,11 @@ struct Ours {
 
 /// How a parameter's stored numbers become one of our values.
 enum Conv {
-    Scalar { scale: f64, min: f64, max: f64 },
+    Scalar {
+        scale: f64,
+        min: f64,
+        max: f64,
+    },
     Bool,
     /// Our option index for each of the project's (1-based) choices.
     Enum(Vec<Option<u32>>),
@@ -233,7 +237,9 @@ pub(crate) fn apply(spec: &EffectSpec, fg: &mut PropGroup, effect: &str, params:
         })
         .collect();
     let count_ours = |name: &str| ours.iter().filter(|o| o.name == name).count();
-    let count_theirs = |name: &str| defs.iter().filter(|d| !matches!(d.kind, GROUP_START | GROUP_END) && (norm(&d.name) == name || (d.kind == CHECKBOX && norm(&d.label) == name))).count();
+    let count_theirs = |name: &str| {
+        defs.iter().filter(|d| !matches!(d.kind, GROUP_START | GROUP_END) && (norm(&d.name) == name || (d.kind == CHECKBOX && norm(&d.label) == name))).count()
+    };
     let mut used = vec![false; ours.len()];
     let mut cursor = 0usize;
     // The twirl-down groups the walk is inside, outermost first.
@@ -281,7 +287,9 @@ pub(crate) fn apply(spec: &EffectSpec, fg: &mut PropGroup, effect: &str, params:
             .find(|i| free(*i) && !qualified.is_empty() && ours.get(*i).is_some_and(|o| o.name == qualified))
             .or_else(|| around().find(|i| free(*i) && named(*i) && here(*i)))
             .or_else(|| (cursor..ours.len()).find(|i| free(*i) && named(*i) && level(*i)))
-            .or_else(|| (0..ours.len()).find(|i| free(*i) && named(*i) && ours.get(*i).is_some_and(|o| count_ours(&o.name) == 1 && count_theirs(&o.name) == 1)));
+            .or_else(|| {
+                (0..ours.len()).find(|i| free(*i) && named(*i) && ours.get(*i).is_some_and(|o| count_ours(&o.name) == 1 && count_theirs(&o.name) == 1))
+            });
         if def.kind == LAYER {
             // A layer chooser: the layer is named by its id, which the caller resolves.
             let target = raw.map(|p| p.layer_ref).filter(|r| *r != 0);
@@ -358,7 +366,12 @@ pub(crate) fn apply(spec: &EffectSpec, fg: &mut PropGroup, effect: &str, params:
         RawKind::Group(g) => Some(g),
         _ => None,
     });
-    if options.is_some_and(|g| g.iter().any(|n| matches!(&n.kind, RawKind::Prop(p) if !p.keys.is_empty() || n.match_name == "ADBE Effect Mask Parade") || matches!(&n.kind, RawKind::Group(g) if !g.is_empty()))) {
+    if options.is_some_and(|g| {
+        g.iter().any(|n| {
+            matches!(&n.kind, RawKind::Prop(p) if !p.keys.is_empty() || n.match_name == "ADBE Effect Mask Parade")
+                || matches!(&n.kind, RawKind::Group(g) if !g.is_empty())
+        })
+    }) {
         out.notes.push("its Compositing Options (effect opacity, effect masks) are not imported".into());
     }
     out
@@ -439,7 +452,9 @@ fn spotlight(fg: &mut PropGroup, params: &[RawNode], defs: &[RawParamDef], out: 
             }
             *prop = trial;
             if (SPOT_CONE_SCALE - 1.0).abs() > f64::EPSILON {
-                out.notes.push(format!("its Cone Angle is multiplied by {SPOT_CONE_SCALE}: EffectCraft's light reaches less far than After Effects' at the same angle"));
+                out.notes.push(format!(
+                    "its Cone Angle is multiplied by {SPOT_CONE_SCALE}: EffectCraft's light reaches less far than After Effects' at the same angle"
+                ));
             }
         }
     }
@@ -447,7 +462,10 @@ fn spotlight(fg: &mut PropGroup, params: &[RawNode], defs: &[RawParamDef], out: 
         && let Some(prop) = fg.prop_mut("intensity")
         && hold(prop, f64::NEG_INFINITY, 100.0)
     {
-        out.notes.push("its Intensity above 100% is held at 100%: in the Light Shadow mode After Effects does not brighten the lit area, and EffectCraft's light would".into());
+        out.notes.push(
+            "its Intensity above 100% is held at 100%: in the Light Shadow mode After Effects does not brighten the lit area, and EffectCraft's light would"
+                .into(),
+        );
     }
 }
 
