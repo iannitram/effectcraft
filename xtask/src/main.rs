@@ -33,6 +33,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("opusenc", 0),
     ("hevcenc", 0),
     ("av1enc", 0),
+    ("sysmem", 0), // ours (frames in flight follow free memory), not upstream
     ("raster", 1),
     ("keyframe", 1),
     ("path", 1),
