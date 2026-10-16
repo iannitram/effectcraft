@@ -23,6 +23,7 @@ mod control_server;
 mod launch_guard;
 #[cfg(target_os = "macos")]
 mod native_menu;
+mod self_logging; // ours
 // Built everywhere so it stays checked; only the macOS app uses it.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod sheet_dialogs;
@@ -127,8 +128,9 @@ fn main() -> eframe::Result {
     // First, so the panic hook and every start-up warning are recorded. Records go to stderr
     // and the session log; Help ▸ Enable Logging writes through this logger too, and warnings
     // feed the compatibility report.
-    effectcraft_engine::logging::install();
+    self_logging::install(); // ours: upstream's logging::install, wrapped
     effectcraft_engine::logging::install_panic_hook();
+    self_logging::crash_hook(); // ours
     let Args { control_port, files, demo, home } = match parse_args(std::env::args().skip(1), std::env::var("EFFECTCRAFT_CONTROL_PORT")) {
         Ok(Some(args)) => args,
         Ok(None) => {
@@ -158,6 +160,7 @@ fn main() -> eframe::Result {
     // Settings ▸ Startup & Repair ▸ Window Graphics, switched to OpenGL when the last launch
     // stopped as its window opened (a crashing graphics driver, #243).
     let mut launch = launch_guard::Launch::begin(effectcraft_host::config_dir().as_deref(), std::env::var_os("WGPU_BACKEND").is_some());
+    self_logging::start(launch.backends); // ours
     let on_gl = launch.backends == Some(eframe::wgpu::Backends::GL);
     let notice = launch.notice.take();
     let options = eframe::NativeOptions {
@@ -228,6 +231,7 @@ fn main() -> eframe::Result {
             // Fit the window to its monitor, or put it back where it was (still hidden).
             let saved_window = session.config.as_deref().and_then(window::load);
             let opened = cc.winit_window().map(|w| window::restore(w, saved_window));
+            self_logging::window_check(cc, opened); // ours
             let recovery = if control_port.is_none() { session.begin_recovery() } else { None };
             let project = files.iter().find(|f| is_project_file(f)).cloned();
             if let Some(p) = project {

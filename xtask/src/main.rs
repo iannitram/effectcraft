@@ -28,6 +28,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("color", 0),
     ("vp9enc", 0),
     ("testkit", 0),
+    ("craft-stage", 0), // ours (self-logging), not upstream
     ("opusenc", 0),
     ("hevcenc", 0),
     ("av1enc", 0),
@@ -56,6 +57,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("engine", 4),
     ("script", 4),
     ("host", 4),
+    ("craft-log", 5), // ours (self-logging), not upstream
     ("ui-egui", 5),
     ("automation", 5),
     ("effectcraft", 6),

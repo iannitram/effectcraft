@@ -135,6 +135,13 @@ pub fn install() {
     }
 }
 
+/// Ours (self-logging): the logger with `spec` as its filter, NOT installed, and its level ceiling, for craft-log to wrap.
+pub fn unwrapped(spec: &str) -> (&'static dyn log::Log, LevelFilter) {
+    static LOGGER: Logger = Logger; // ours
+    let filter = FILTER.get_or_init(|| parse_filter(spec)); // ours
+    (&LOGGER, filter.iter().map(|d| d.1).fold(LevelFilter::Info, Ord::max)) // ours
+} // ours
+
 /// Whether the filter lets a record through to standard error and the session log.
 fn shown(m: &log::Metadata) -> bool {
     FILTER.get().is_some_and(|f| m.level() <= level_for(f, m.target()))
