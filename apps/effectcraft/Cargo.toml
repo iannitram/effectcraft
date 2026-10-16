@@ -25,6 +25,7 @@ rfd = { workspace = true }
 pollster = { workspace = true }
 cpal = { workspace = true }
 log = { workspace = true }
+craft-log = { path = "../../crates/craft-log" } # ours (self-logging)
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Settings ▸ Appearance ▸ Sync with System: the XDG desktop portal's colour scheme. Already in

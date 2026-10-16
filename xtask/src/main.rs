@@ -1,4 +1,4 @@
-//! Workspace automation: `cargo xtask <layers|assets|wasm|web|ico|ci>`.
+//! Workspace automation: `cargo xtask <layers|assets|pdf-deps|wasm|web|ico|ci>`.
 //!
 //! - `layers`: enforces the dependency layering of `docs/architecture.md` §1 (downward-only edges,
 //!   listed same-layer edges, no UI/OS crates below L5).
@@ -9,12 +9,13 @@
 //! - `assets`: every asset file (image, icon, font, LUT, audio, video…) has a complete
 //!   `<file>.attribution` sidecar and an entry in `ATTRIBUTION.md` (AGENTS.md §1).
 //! - `ico <out.ico> <in.png>…`: pack PNGs into a Windows `.ico` (used by `packaging/icons.sh`).
-//! - `ci`: fmt check, clippy -D warnings, tests, layers, assets, wasm.
+//! - `ci`: fmt check, clippy -D warnings, tests, PDF dependency policy, layers, assets, wasm.
 //! - `bench [--bin CLI] [--quick] [--compare OLD.jsonl] …`: render benchmark of generated scenarios
 //!   (memory, CPU, wall time) into `target/bench/results.jsonl` (`bench.rs`, docs/testing.md).
 
 mod bench;
 mod ico;
+mod pdf_deps;
 mod version;
 
 use std::process::{Command, ExitCode};
@@ -28,9 +29,11 @@ const LAYERS: &[(&str, u8)] = &[
     ("color", 0),
     ("vp9enc", 0),
     ("testkit", 0),
+    ("craft-stage", 0), // ours (self-logging), not upstream
     ("opusenc", 0),
     ("hevcenc", 0),
     ("av1enc", 0),
+    ("sysmem", 0), // ours (frames in flight follow free memory), not upstream
     ("raster", 1),
     ("keyframe", 1),
     ("path", 1),
@@ -56,6 +59,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("engine", 4),
     ("script", 4),
     ("host", 4),
+    ("craft-log", 5), // ours (self-logging), not upstream
     ("ui-egui", 5),
     ("automation", 5),
     ("effectcraft", 6),
@@ -411,6 +415,7 @@ fn ci() -> Result<(), String> {
     run(Command::new(cargo).args(["fmt", "--check"]))?;
     run(Command::new(cargo).args(["clippy", "--workspace", "--all-targets", "--release", "--", "-D", "warnings"]))?;
     run(Command::new(cargo).args(["test", "--workspace", "--release"]))?;
+    pdf_deps::run(&root())?;
     layers()?;
     assets()?;
     wasm()
@@ -422,6 +427,7 @@ fn main() -> ExitCode {
         "layers" => layers(),
         "wasm" => wasm(),
         "assets" => assets(),
+        "pdf-deps" => pdf_deps::run(&root()),
         "ci" => ci(),
         "web" => web(&std::env::args().skip(2).collect::<Vec<_>>()),
         "bench" => bench::run(&root(), &std::env::args().skip(2).collect::<Vec<_>>()),
@@ -433,7 +439,7 @@ fn main() -> ExitCode {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             version::run(&root(), &rest.iter().map(String::as_str).collect::<Vec<_>>())
         }
-        _ => Err("usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|ico OUT.ico IN.png…|version [set X.Y.Z]|ci|bench [--bin CLI] [--quick] [--project F --comp C] [--compare OLD.jsonl] (--help)>".into()),
+        _ => Err("usage: cargo xtask <layers|assets|pdf-deps|wasm|web [--dev] [--serve PORT]|ico OUT.ico IN.png…|version [set X.Y.Z]|ci|bench [--bin CLI] [--quick] [--project F --comp C] [--compare OLD.jsonl] (--help)>".into()),
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,

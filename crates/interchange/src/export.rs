@@ -686,7 +686,10 @@ fn media_info(name: &str, kind: MediaKind, duration: Tick, video: Option<VideoSp
             bitrate: None,
             hdr: None,
         }),
-        audio_streams: audio.then(|| AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: "pcm".into(), bits_per_sample: Some(16) }).into_iter().collect(),
+        audio_streams: audio
+            .then(|| AudioStreamInfo { sample_rate: 48_000, channels: 2, codec: "pcm".into(), bits_per_sample: Some(16) })
+            .into_iter()
+            .collect(),
         container: String::new(),
         start_timecode: None,
         file_size: None,

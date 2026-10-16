@@ -11,6 +11,7 @@ rust-version = "1.95"
 repository = "https://github.com/storytold/effectcraft"
 
 [workspace.dependencies]
+craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "ca50d63b773c99f96e75c77ce5a1d21e7c9cda0d", version = "=0.1.0", default-features = false, features = ["read"] }
 # internal
 effectcraft-time = { path = "crates/time" }
 effectcraft-geom = { path = "crates/geom" }
@@ -92,6 +93,10 @@ filmcraft-av1 = { git = "https://github.com/storytold/filmcraft", rev = "71438c6
 filmcraft-interchange = { git = "https://github.com/storytold/filmcraft", rev = "71438c627b5cbcfb550526c3971f4d0037733c5c" }
 filmcraft-project = { git = "https://github.com/storytold/filmcraft", rev = "71438c627b5cbcfb550526c3971f4d0037733c5c" }
 filmcraft-geom = { git = "https://github.com/storytold/filmcraft", rev = "71438c627b5cbcfb550526c3971f4d0037733c5c" }
+# The symphonia filmcraft-codecs already builds, named only to turn on its AIFF reader (crates/media).
+# Upstream needs it because its pin enables wav alone; ours (71438c62) already enables aiff, so here it
+# changes nothing. Drop it once upstream's pin moves past that.
+symphonia = { version = "0.5.5", default-features = false, features = ["aiff"] }
 
 # gpu (the same wgpu eframe / egui-wgpu use)
 wgpu = { version = "30.0.1", features = ["fragile-send-sync-non-atomic-wasm"] }
@@ -205,3 +210,6 @@ opt-level = 3
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+[patch.crates-io]
+hayro-syntax = { git = "https://github.com/storytold/craft-libs", rev = "ca50d63b773c99f96e75c77ce5a1d21e7c9cda0d", version = "=0.7.2" }

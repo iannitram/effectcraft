@@ -489,14 +489,13 @@ fn audio_levels_and_their_keyframes() {
         k
     };
     let audio = group(&[tdmn("ADBE Audio Levels"), list(b"tdbs", &[tdb4(2, false), key_list(88, &[key(0, -20.0), key(30_000, 0.0)])])]);
-    let layer = list(
-        b"Layr",
-        &[ldta(&L { id: 1, source: 12, ..Default::default() }), chunk(b"Utf8", b"Music"), group(&[tdmn("ADBE Audio Group"), audio])],
-    );
+    let layer = list(b"Layr", &[ldta(&L { id: 1, source: 12, ..Default::default() }), chunk(b"Utf8", b"Music"), group(&[tdmn("ADBE Audio Group"), audio])]);
     let comp = list(b"Item", &[idta(4, 30), chunk(b"Utf8", b"Comp"), cdta(1280, 720, 90), layer]);
     let bytes = file(&[list(b"Fold", &[footage_item(12, 1280, 720, "C:\\media\\music.mov"), comp])]);
     let mut p = Project::default();
-    let mut with_sound = |_: &FootageRef| -> Option<Footage> { Some(Footage { path: "D:/copies/music.mov".into(), width: 1280, height: 720, has_video: true, has_audio: true, ..Default::default() }) };
+    let mut with_sound = |_: &FootageRef| -> Option<Footage> {
+        Some(Footage { path: "D:/copies/music.mov".into(), width: 1280, height: 720, has_video: true, has_audio: true, ..Default::default() })
+    };
     let r = import(&mut p, &bytes, &mut with_sound).unwrap();
     let l = &p.comp(r.main_comp.unwrap()).unwrap().layers[0];
     let keys = &l.props.prop("audio/levels").unwrap().keys;
