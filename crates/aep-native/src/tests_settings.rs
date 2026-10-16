@@ -239,7 +239,8 @@ fn levels_block(numbers: [f32; 25]) -> Vec<u8> {
     b
 }
 
-const LEVELS_UNTOUCHED: [f32; 25] = [0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0];
+const LEVELS_UNTOUCHED: [f32; 25] =
+    [0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0];
 
 fn levels_defs() -> Vec<Vec<Vec<u8>>> {
     vec![
@@ -260,12 +261,8 @@ fn levels_reads_its_private_block() {
     set[2] = 1.5; // RGB gamma
     set[5 + 4] = 0.75; // red output white
     let block = |b: &[u8]| chunk(b"aRbp", b);
-    let fixed_levels = effect(
-        "Levels",
-        &levels_defs(),
-        1,
-        &[tdmn("ADBE Easy Levels2-0002"), list(b"tdbs", &[tdb4(1, false)]), list(b"aRbs", &[block(&levels_block(set))])],
-    );
+    let fixed_levels =
+        effect("Levels", &levels_defs(), 1, &[tdmn("ADBE Easy Levels2-0002"), list(b"tdbs", &[tdb4(1, false)]), list(b"aRbs", &[block(&levels_block(set))])]);
     let mut later = set;
     later[0] = 0.25;
     let key = |t: i32| {
@@ -327,10 +324,7 @@ fn curves_block(rgb: &[(u16, u16)]) -> Vec<u8> {
 
 #[test]
 fn curves_reads_its_points() {
-    let defs = vec![
-        def("ADBE CurvesCustom-0000", 0, "", |_| {}),
-        private("ADBE CurvesCustom-0001", "Curves", &curves_block(&[(0, 0), (255, 255)])),
-    ];
+    let defs = vec![def("ADBE CurvesCustom-0000", 0, "", |_| {}), private("ADBE CurvesCustom-0001", "Curves", &curves_block(&[(0, 0), (255, 255)]))];
     assert_eq!(curves_block(&[(0, 0), (255, 255)]).len(), 1644);
     let bent = curves_block(&[(0, 0), (51, 102), (255, 255)]);
     let fx = effect("Curves", &defs, 1, &[tdmn("ADBE CurvesCustom-0001"), list(b"tdbs", &[tdb4(1, false)]), list(b"aRbs", &[chunk(b"aRbp", &bent)])]);
@@ -421,9 +415,16 @@ fn layer_choosers_point_at_their_layer() {
             v
         },
     ];
-    let chooser = |layer: u32| vec![tdmn("ADBE Time Displacement-0001"), list(b"tdbs", &[tdb4(1, false), chunk(b"cdat", &f64s(&[0.0])), chunk(b"tdpi", &layer.to_be_bytes())])];
+    let chooser = |layer: u32| {
+        vec![tdmn("ADBE Time Displacement-0001"), list(b"tdbs", &[tdb4(1, false), chunk(b"cdat", &f64s(&[0.0])), chunk(b"tdpi", &layer.to_be_bytes())])]
+    };
     let with = |layer: u32| {
-        effect("Time Displacement", &defs, 1, &[chooser(layer), stored("ADBE Time Displacement-0003", 1, &[24.0]), stored("ADBE Time Displacement-0004", 1, &[0.0])].concat())
+        effect(
+            "Time Displacement",
+            &defs,
+            1,
+            &[chooser(layer), stored("ADBE Time Displacement-0003", 1, &[24.0]), stored("ADBE Time Displacement-0004", 1, &[0.0])].concat(),
+        )
     };
     // Layer 1 uses layer 2 as its map; layer 2 has no effects.
     let (p, r) = run(&project(&[vec![("ADBE Time Displacement", with(2))], vec![]]));

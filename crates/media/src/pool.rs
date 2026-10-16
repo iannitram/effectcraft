@@ -1056,8 +1056,14 @@ mod tests {
     fn a_movie_is_asked_for_a_time_short_of_the_middle_of_its_frame() {
         for (num, den) in [(12, 1), (24, 1), (25, 1), (30, 1), (60, 1), (24_000, 1001), (30_000, 1001)] {
             let rate = FrameRate { num, den };
-            let footage =
-                Footage { path: "/clip.mp4".into(), kind: FootageKind::Video, has_video: true, frame_rate: rate, duration: Tick(10 * TICKS_PER_SECOND), ..Default::default() };
+            let footage = Footage {
+                path: "/clip.mp4".into(),
+                kind: FootageKind::Video,
+                has_video: true,
+                frame_rate: rate,
+                duration: Tick(10 * TICKS_PER_SECOND),
+                ..Default::default()
+            };
             for i in [0i64, 1, 6, 15, 100] {
                 let loc = Inner::locate(&footage, rate.tick_of(i), FloatCurve::Srgb);
                 assert_eq!(loc.key.frame, i);

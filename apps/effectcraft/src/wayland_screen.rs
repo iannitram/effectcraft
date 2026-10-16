@@ -388,8 +388,8 @@ mod tests {
         assert_eq!(find(&outputs, Some("eDP-1")), Some(&outputs[1]));
         assert_eq!(find(&outputs, Some("HDMI-A-1")), None);
         assert_eq!(find(&outputs, None), None);
-        assert_eq!(find(&[big.clone()], None), Some(&big));
-        assert_eq!(find(&[big.clone()], Some("other")), Some(&big));
+        assert_eq!(find(std::slice::from_ref(&big), None), Some(&big));
+        assert_eq!(find(std::slice::from_ref(&big), Some("other")), Some(&big));
     }
 
     #[test]

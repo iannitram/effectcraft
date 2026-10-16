@@ -291,7 +291,7 @@ fn only_comp(p: &Value) -> Option<effectcraft_engine::project::ItemId> {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
-    if id == "effects.copyPresetsFolderPath" {
+    if matches!(id, "effects.copyPresetsFolderPath" | "mediaBrowser.copySourcePath") {
         return frontend(app, ctx, id, params);
     }
     // Layer ▸ New ▸ Text (menu, shortcut, context menus) puts an insertion point in the centre of
@@ -880,6 +880,11 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
     let now = ctx.input(|i| i.time);
     let v = &mut app.ui.viewer;
     Ok(match id {
+        "mediaBrowser.copySourcePath" => {
+            let path = p.get("path").and_then(Value::as_str).filter(|path| !path.is_empty()).ok_or("A source path is required")?;
+            ctx.copy_text(path.to_string());
+            json!({"path": path})
+        }
         "effects.copyPresetsFolderPath" => {
             if cfg!(target_arch = "wasm32") {
                 return Err("The web app has no local presets folder".into());
@@ -1361,7 +1366,9 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
         "keys.rpfCameraImport" => ("path", Ask::Open(&["json", "csv", "txt"])),
         "essential.exportTemplate" => ("path", Ask::Save("Template.ectemplate")),
         "essential.importTemplate" => ("path", Ask::Open(&["ectemplate"])),
-        "file.setProxy" => ("path", Ask::Open(&["mp4", "mov", "m4v", "mkv", "webm", "mxf", "avi", "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr"])),
+        "file.setProxy" => {
+            ("path", Ask::Open(&["mp4", "mov", "m4v", "mkv", "webm", "mxf", "avi", "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr"]))
+        }
         _ => return None,
     };
     if params.get(key).is_some()
@@ -1373,8 +1380,8 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
         return None;
     }
     const MEDIA: &[&str] = &[
-        "mp4", "mov", "m4v", "mkv", "webm", "mxf", "avi", "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr", "dpx", "cin", "wav", "aif", "aiff", "mp3",
-        "flac", "ogg", "opus", "svg", "pdf", "ai", "eps", "psd", "psb", "tga", "hdr", "gltf", "glb", "obj", "stl", "fbx", "json", "csv", "tsv",
+        "mp4", "mov", "m4v", "mkv", "webm", "mxf", "avi", "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr", "dpx", "cin", "wav", "aif", "aiff",
+        "mp3", "flac", "ogg", "opus", "svg", "pdf", "ai", "eps", "psd", "psb", "tga", "hdr", "gltf", "glb", "obj", "stl", "fbx", "json", "csv", "tsv",
     ];
     // A host whose modal dialogs would run a nested event loop inside this frame (macOS: a
     // drag over the window then re-entered winit's event handler and aborted, #511) shows the
@@ -1519,6 +1526,19 @@ pub(crate) fn panel_shown(app: &EffectcraftApp, p: PanelKind) -> bool {
         Some(m) => m == p,
         None => app.ui.dock.is_visible(p),
     }
+}
+
+/// The command a menu entry runs when chosen from a menu: Window ▸ <panel> closes a panel whose
+/// entry is checked, as in After Effects (#1630). Shortcuts and agents calling `window.panel`
+/// still only show the panel.
+pub(crate) fn menu_choice(app: &EffectcraftApp, id: String, params: Value) -> (String, Value) {
+    if id == "window.panel"
+        && let Some(p) = params.get("panel").and_then(Value::as_str).and_then(PanelKind::from_name)
+        && panel_shown(app, p)
+    {
+        return ("window.closePanel".into(), params);
+    }
+    (id, params)
 }
 
 /// Check-mark state of frontend toggles (engine state is answered by the engine).
@@ -1990,7 +2010,7 @@ pub fn menu_bar(app: &mut EffectcraftApp, ui: &mut egui::Ui) {
         });
     });
     crate::menu_keys::handle(&ctx, &nav);
-    if let Some((id, params)) = clicked
+    if let Some((id, params)) = clicked.map(|(id, params)| menu_choice(app, id, params))
         && let Err(e) = invoke(app, &ctx, &id, if params.is_null() { json!({}) } else { params })
     {
         app.ui.status = e;

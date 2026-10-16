@@ -402,7 +402,11 @@ pub(crate) mod tests {
         let t = text_doc(&plain).unwrap();
         assert_eq!((t.stroke, t.frame, t.doc.apply_stroke), (None, Some(0), false));
         // Switched off, its colour and width stay out of the style.
-        let off = replace(&plain, b"/2 false /3 true", b"/2 false /3 true /54 << /99 /SimplePaint /0 << /0 1 /1 [ 1.0 0.0 0.5 1.0 ] >> >> /57 false /58 false /63 3.5");
+        let off = replace(
+            &plain,
+            b"/2 false /3 true",
+            b"/2 false /3 true /54 << /99 /SimplePaint /0 << /0 1 /1 [ 1.0 0.0 0.5 1.0 ] >> >> /57 false /58 false /63 3.5",
+        );
         let t = text_doc(&off).unwrap();
         assert_eq!((t.stroke, t.doc.apply_stroke, t.doc.stroke_width, t.doc.stroke_over_fill), (None, false, 0.0, true));
         let on = replace(&off, b"/57 false", b"/57 true");
