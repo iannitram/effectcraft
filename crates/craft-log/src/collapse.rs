@@ -5,6 +5,11 @@ use std::sync::{Mutex, PoisonError};
 
 /// Lines kept in memory for crash files and failure reports.
 pub const RING_LINES: usize = 200;
+
+/// Tests that flood the ring, or need a line of theirs to stay in it, hold this so they never
+/// run at the same time (the ring is one per process, and tests run in parallel).
+#[cfg(test)]
+pub(crate) static RING_TEST_LOCK: Mutex<()> = Mutex::new(());
 /// A line repeated this many times gets a "so far" note, so a flood still shows it is going on.
 pub const REPEAT_NOTE_EVERY: u64 = 10_000;
 
@@ -100,6 +105,7 @@ mod tests {
 
     #[test]
     fn the_ring_keeps_the_newest_lines() {
+        let _turn = RING_TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         for i in 0..(RING_LINES + 5) {
             remember(&format!("ring-test {i}\n"));
         }
