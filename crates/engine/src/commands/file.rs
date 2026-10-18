@@ -52,11 +52,11 @@ pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
     let text = if crate::xml_project::is_xml(&text) { crate::xml_project::from_xml(&text).map_err(EngineError::Other)? } else { text };
     let (mut proj, repaired) =
         Project::from_json_repaired(&text).map_err(|e| EngineError::Other(format!("{path} is not a project EffectCraft can open: {e}")))?;
+    let followed = crate::media_anchor::follow(&mut proj, &effectcraft_project::saved_anchor(&text), path, s.services.as_ref()); // ours: before resolve_footage, which rewrites the stored paths the anchor is keyed by
     // Footage saved with a relative path (imported by the CLI or an agent as `clip.mp4`, or
     // written by hand) is found next to the project file, as After Effects looks for footage
     // relative to the project (#652).
     let refused = crate::doc_path::resolve_footage(&mut proj, Some(path));
-    let followed = crate::media_anchor::follow(&mut proj, &effectcraft_project::saved_anchor(&text), path, s.services.as_ref()); // ours
     s.replace_project(proj, Some(path.to_string()));
     s.stored_paths.add(&s.project, Some(path));
     s.restore_view(&effectcraft_project::saved_view(&text));
