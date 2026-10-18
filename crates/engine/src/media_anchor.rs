@@ -306,7 +306,12 @@ mod tests {
         let paths = all_paths(&s);
         let moved = root.join("Moved").to_string_lossy().into_owned();
         assert_eq!(paths.iter().filter(|p| p.starts_with(&moved)).count(), 1 + 1 + 3 + 1, "movie, sequence (path and 3 frames), proxy: {paths:?}");
-        assert!(paths.contains(&"/elsewhere/table.csv".to_string()), "Data footage is left alone");
+        // Upstream's resolve_footage writes the stored path the platform's way (on Windows a
+        // rooted path gets its drive and backslashes), so compare by its tail.
+        assert!(
+            paths.iter().any(|p| !p.starts_with(&moved) && p.replace('\\', "/").ends_with("/elsewhere/table.csv")),
+            "Data footage is left alone: {paths:?}"
+        );
         assert!(!s.is_dirty(), "following the folder is not an edit");
     }
 

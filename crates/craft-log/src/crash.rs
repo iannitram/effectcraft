@@ -129,6 +129,8 @@ mod tests {
 
     #[test]
     fn a_second_crash_in_the_same_instant_gets_its_own_file() {
+        // the ring test pushes 205 lines in parallel: it would push ours out
+        let _turn = collapse::RING_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = temp_dir("write");
         collapse::remember("crash-test: a line before the panic");
         let a = write(&dir, &APP, "first", "t", "bt").unwrap();
