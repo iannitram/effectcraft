@@ -1203,7 +1203,7 @@ dependencies = [
 
 [[package]]
 name = "effectcraft-aep-native"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "effectcraft-color",
  "effectcraft-effects",
@@ -1649,7 +1649,7 @@ dependencies = [
 
 [[package]]
 name = "effectcraft-sysmem"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
