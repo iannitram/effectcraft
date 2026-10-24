@@ -8,6 +8,7 @@
 
 pub mod build;
 pub mod essential;
+mod file_check;
 pub mod limits;
 pub mod props;
 pub mod render_queue;
@@ -1543,8 +1544,9 @@ impl Project {
             && self.render_prefs == other.render_prefs
     }
     /// The project file's text: the project with the version that wrote it (`savedBy`), checked
-    /// to read back, so a save never writes a file that can't be opened (JSON has no NaN or
-    /// infinity: such a value would be written as `null`).
+    /// to read back, so a save never writes a file that can't be opened. Values JSON can't hold
+    /// (NaN or infinity, written as `null`, and nesting too deep to parse) are refused on every
+    /// save; debug builds also read the text back.
     pub fn to_file_json(&self) -> Result<String, ProjectError> {
         self.to_file_json_with_view(&SavedView::default())
     }
@@ -1555,6 +1557,12 @@ impl Project {
     /// Ours: [`Project::to_file_json_with_view`] that also records where the file is saved
     /// ([`Anchor`]), so footage can follow a moved project folder.
     pub fn to_file_json_anchored(&self, view: &SavedView, anchor: &Anchor) -> Result<String, ProjectError> {
+        if self.schema > SCHEMA_VERSION {
+            return Err(ProjectError::Invalid(format!(
+                "the project can't be saved: it holds a value a project file can't store (project schema {} is newer than this version supports ({SCHEMA_VERSION}))",
+                self.schema
+            )));
+        }
         #[derive(Serialize)]
         struct File<'a> {
             #[serde(rename = "savedBy")]
@@ -1566,8 +1574,11 @@ impl Project {
             #[serde(flatten)]
             project: &'a Project,
         }
-        let text = serde_json::to_string_pretty(&File { saved_by: APP_VERSION, view, anchor, project: self })
-            .map_err(|e| ProjectError::Invalid(format!("the project can't be saved: {e}")))?;
+        let file = File { saved_by: APP_VERSION, view, anchor, project: self };
+        file_check::check(&file)
+            .map_err(|e| ProjectError::Invalid(format!("the project can't be saved: it holds a value a project file can't store ({e})")))?;
+        let text = serde_json::to_string_pretty(&file).map_err(|e| ProjectError::Invalid(format!("the project can't be saved: {e}")))?;
+        #[cfg(debug_assertions)]
         Project::from_json(&text)
             .map_err(|e| ProjectError::Invalid(format!("the project can't be saved: it holds a value a project file can't store ({e})")))?;
         Ok(text)
