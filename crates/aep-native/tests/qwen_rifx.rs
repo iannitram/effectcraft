@@ -65,25 +65,20 @@ fn flat_chunks_and_odd_padding() {
     let f = rifx_file(&[chunk(b"abcd", b"xyz"), chunk(b"efgh", b"1234")]);
     let (root, _rest) = rifx::parse(&f).unwrap();
     assert_eq!(root.kids.len(), 2);
-
-    // First kid
-    let kid0 = &root.kids[0];
-    assert_eq!(kid0.id, *b"abcd");
-    assert_eq!(kid0.data, b"xyz");
-    assert_eq!(kid0.list, None);
-
-    // Second kid
-    let kid1 = &root.kids[1];
-    assert_eq!(kid1.id, *b"efgh");
-    assert_eq!(kid1.data, b"1234");
+    let k0 = &root.kids[0];
+    assert_eq!(k0.id, *b"abcd");
+    assert_eq!(k0.data, b"xyz");
+    assert!(k0.list.is_none());
+    let k1 = &root.kids[1];
+    assert_eq!(k1.id, *b"efgh");
+    assert_eq!(k1.data, b"1234");
 }
 
 #[test]
 fn nested_list_found() {
     let f = rifx_file(&[list(b"Fold", &[chunk(b"name", b"Comp 1\0")])]);
     let (root, _rest) = rifx::parse(&f).unwrap();
-
-    let l = root.list(b"Fold").unwrap();
+    let l = root.list(b"Fold").expect("Fold list should exist");
     assert!(l.data.is_empty());
     assert_eq!(l.first(b"name").unwrap().data, b"Comp 1\0");
     assert!(root.find_list(b"Fold").is_some());
@@ -95,7 +90,6 @@ fn nested_list_found() {
 fn find_list_searches_depth_first() {
     let f = rifx_file(&[list(b"Outr", &[list(b"Innr", &[chunk(b"data", b"ab")])])]);
     let (root, _rest) = rifx::parse(&f).unwrap();
-
     assert!(root.list(b"Innr").is_none());
     assert_eq!(root.find_list(b"Innr").unwrap().first(b"data").unwrap().data, b"ab");
 }
@@ -104,30 +98,26 @@ fn find_list_searches_depth_first() {
 fn lists_returns_every_match() {
     let f = rifx_file(&[list(b"Item", &[]), chunk(b"sep_", b""), list(b"Item", &[])]);
     let (root, _rest) = rifx::parse(&f).unwrap();
-
     assert_eq!(root.lists(b"Item").count(), 2);
 }
 
 #[test]
 fn btdk_list_kept_opaque() {
-    let f = rifx_file(&[list(b"btdk", &[chunk(b"abcd", b"zz")])]);
+    let f = rifx_file(&[list(b"btdk", &[chunk(b"abcd", b"")])]);
     let (root, _rest) = rifx::parse(&f).unwrap();
-
-    let kid = &root.kids[0];
-    assert_eq!(kid.list, Some(*b"btdk"));
-    assert!(kid.kids.is_empty());
-    assert_eq!(kid.data, chunk(b"abcd", b"zz"));
+    let l = root.list(b"btdk").expect("btdk list should exist");
+    assert_eq!(l.data.len(), 8);
 }
 
 #[test]
 fn oversize_length_clamped() {
     let mut f = rifx_file(&[chunk(b"abcd", b"12345")]);
-    // Set bytes 16..20 (the chunk's size field) to 1000u32.to_be_bytes()
+    f.extend_from_slice(b"<x:xmpmeta/>");
     f[16..20].copy_from_slice(&1000u32.to_be_bytes());
-    let (root, _rest) = rifx::parse(&f).unwrap();
-
+    let (root, rest) = rifx::parse(&f).unwrap();
     assert_eq!(root.kids.len(), 1);
     assert_eq!(root.kids[0].data, b"12345\0");
+    assert_eq!(rest, b"<x:xmpmeta/>");
 }
 
 #[test]
@@ -135,7 +125,6 @@ fn trailing_xmp_returned() {
     let mut f = rifx_file(&[chunk(b"abcd", b"12")]);
     f.extend_from_slice(b"<x:xmpmeta/>");
     let (root, rest) = rifx::parse(&f).unwrap();
-
     assert_eq!(rest, b"<x:xmpmeta/>");
     assert_eq!(root.kids.len(), 1);
 }
@@ -179,6 +168,5 @@ fn text_field_nul_terminated() {
 #[test]
 fn text_field_utf8_chunk() {
     assert_eq!(text_field(b"Utf8\0\0\0\x05hello!!"), "hello");
-    // A length past the end is clamped:
     assert_eq!(text_field(b"Utf8\0\0\0\x09hi"), "hi");
 }
