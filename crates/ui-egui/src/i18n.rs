@@ -1710,6 +1710,7 @@ const JAPANESE: &[(&str, &str, &str)] = &[
     ("file.importSolid", "Solid...", "平面..."),
     ("file.importLottie", "Lottie...", "Lottie..."),
     ("file.importProject", "EffectCraft Project...", "EffectCraftプロジェクト..."),
+    ("file.importAep", "After Effects Project...", "After Effectsプロジェクト..."),
     ("file.importVanishingPoint", "Vanishing Point (.vpe)...", "Vanishing Point (.vpe)..."),
     ("essential.importTemplate", "Essential Graphics Template...", "エッセンシャルグラフィックステンプレート..."),
     ("", "Import Recent Footage", "最近使用したフッテージを読み込み"),

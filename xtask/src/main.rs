@@ -54,6 +54,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("gpu", 3),
     ("lottie", 3),
     ("aep-native", 3),
+    ("aep", 3),
     ("format", 3),
     ("plugin", 3),
     ("interchange", 3),
