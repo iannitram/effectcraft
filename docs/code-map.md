@@ -34,7 +34,7 @@ flowchart TD
 
 ## CI
 
-Workflows are upstream's (`.github/workflows/`): `ci.yml` (the test gate), `windows-arm64.yml`, `nix.yml`, `freebsd.yml`, `packaging-lint.yml`, `sonarcloud.yml`, `release.yml`. On our fork the test gate has never run (see its issue).
+Workflows are upstream's (`.github/workflows/`): `ci.yml` (the test gate), `windows-arm64.yml`, `nix.yml`, `freebsd.yml`, `packaging-lint.yml`, `sonarcloud.yml`, `release.yml`. On our fork the test gate has never run (#44).
 
 ## Where our delta lives
 

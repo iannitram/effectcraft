@@ -28,7 +28,7 @@ The owner's After Effects title work (two intros and seven title projects) opens
 | D5 | **Self-logging** (`craft-log`, `craft-stage`, `sysmem`): log files, secret masking, diagnostics | built; size cap open | #22, #23 | keep on our fork |
 | D6 | **Linux desktop:** Wayland window fit; Wayland file drops; footage follows a moved project folder | fit and folder-follow built; drops open | #24, #27 | send upstream |
 | D7 | **GPU:** adjustment-layer blending in the shader | open | #16 | send upstream |
-| D8 | **Releases through the Craft launcher:** public, labelled unofficial builds for Windows, macOS and Linux by GitHub Actions; the launcher owns updates | not built | new issue | keep on our fork |
+| D8 | **Releases through the Craft launcher:** public, labelled unofficial builds for Windows, macOS and Linux by GitHub Actions; the launcher owns updates | not built | #45 (blocked by the test gate, #44) | keep on our fork |
 | D9 | **FilmCraft pin and H.265:** move the pin to take the MP4 fixes; help FilmCraft upstream's H.265 hardware-export PRs | open | #15, #18 | help upstream's PRs |
 
 ## Won'ts (owner rulings)
