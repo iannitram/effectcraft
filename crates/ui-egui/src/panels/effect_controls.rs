@@ -670,6 +670,11 @@ fn toggle_closed(app: &mut EffectcraftApp, g: &PropGroup, open: bool, all: bool)
     }
 }
 
+/// Lays out one property group's rows below `*y` (which it advances), recursing into open
+/// subgroups: one row per visible property with its controls, plus the dial or slider row when its
+/// slider is open, and an inline editor for groups that have one. Rows scrolled out of `rect` are
+/// skipped without being drawn or registered, though their height is still counted. Pick-whip
+/// drops are registered for each visible property; edits go on `actions`.
 #[allow(clippy::too_many_arguments)]
 fn group_rows(
     app: &mut EffectcraftApp,
@@ -971,7 +976,7 @@ fn curves_editor(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter,
     let col = channel_color(ch);
     p.rect_filled(Rect::from_min_max(pos2(gr.min.x, gr.max.y + 3.0), pos2(gr.max.x, gr.max.y + 8.0)), 0.0, col.gamma_multiply(0.5));
     let id = egui::Id::unique(("ec-curves", euid, ch));
-    let (resp, edit) = fw::curves_graph(ui, gr, &cur, ch, pencil, true, id, &t);
+    let (resp, edit) = fw::curves_graph(ui, gr, &cur, ch, fw::CurveMode { pencil, natural: true }, id, &t);
     app.auto.add(&format!("effectControls.effect.{euid}.curves.graph"), gr, "Curves");
     let started = resp.drag_started() || resp.clicked();
     if let Some(np) = edit.changed {
@@ -1121,6 +1126,12 @@ pub fn start_rename(ctx: &egui::Context, uid: u64, name: &str) {
     ctx.memory_mut(|m| m.request_focus(id.with("field")));
 }
 
+/// The Effect Controls panel for the selected layer: a header with the comp and layer names, then
+/// one header per effect (Fx toggle, twirl, rename, Reset, About, label bar, reorder drag and its
+/// right-click menu) followed by that effect's custom editor and its property rows. Dragging
+/// effects or presets onto the panel applies them; a right-click on empty space opens the Effect
+/// menu. The rows read from a snapshot of the project, and every edit is queued and run through
+/// [`crate::menus::invoke`], with failures reported in `app.ui.status`.
 pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let p = ui.painter().with_clip_rect(rect);
