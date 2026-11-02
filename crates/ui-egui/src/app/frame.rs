@@ -313,7 +313,8 @@ impl EffectcraftApp {
     /// fonts are ready, draw the frame, finish pointer wrapping, pump queued wasm frames, record input activity,
     /// publish the completed pass's geometry and pass sequence, acknowledge applied synthetic input and answer
     /// `AfterInput` replies only after a non-discarded pass. Requests repaints while frames are in flight.
-    fn draw_inner(&mut self, ui: &mut egui::Ui, _frame: &eframe::Frame) {
+    #[cfg_attr(target_arch = "wasm32", allow(unused_variables))] // the native pointer wrap is the only reader
+    fn draw_inner(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame) {
         let ctx = ui.ctx().clone();
         if self.gpu_failure_applied == Some(true) {
             self.close_after_device_loss(&ctx);
