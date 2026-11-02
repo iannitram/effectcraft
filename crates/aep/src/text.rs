@@ -218,6 +218,13 @@ fn run_range(run: &Json, offsets: &[usize]) -> Option<std::ops::Range<usize>> {
 pub(crate) fn value(j: &Json) -> Option<Value> {
     let text = j.get("text")?.as_str()?;
     let mut d = TextDoc::plain(&text.replace(['\r', '\u{3}'], "\n"));
+    read_document_style(&mut d, j);
+    apply_runs(&mut d, j);
+    Some(Value::Text(Box::new(d)))
+}
+
+/// The document-wide font, paint, spacing, box and caps settings.
+fn read_document_style(d: &mut TextDoc, j: &Json) {
     if let Some(v) = j.get("font").and_then(Json::as_str) {
         d.font = v.to_owned();
     }
@@ -279,6 +286,10 @@ pub(crate) fn value(j: &Json) -> Option<Value> {
             *dst = v;
         }
     }
+}
+
+/// The character, kerning and paragraph runs, addressed in UTF-16 units as AE stores them.
+fn apply_runs(d: &mut TextDoc, j: &Json) {
     let mut offsets = Vec::with_capacity(d.char_len().saturating_add(1));
     offsets.push(0);
     for ch in d.text.chars() {
@@ -318,7 +329,6 @@ pub(crate) fn value(j: &Json) -> Option<Value> {
             }
         }
     }
-    Some(Value::Text(Box::new(d)))
 }
 
 #[cfg(test)]

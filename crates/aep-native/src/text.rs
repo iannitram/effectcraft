@@ -192,6 +192,7 @@ impl Parser<'_> {
                 }
                 Some(Cos::Str(match raw.strip_prefix(&[0xfe, 0xff]) {
                     Some(utf16) => {
+                        #[allow(clippy::chunks_exact_to_as_chunks)]
                         let units: Vec<u16> = utf16.chunks_exact(2).map(|p| u16::from_be_bytes([p[0], p[1]])).collect();
                         String::from_utf16_lossy(&units)
                     }

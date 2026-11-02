@@ -358,7 +358,28 @@ fn import_doc(next: &mut Project, bytes: &[u8], source_dir: &str, resolve_media:
     }
     let mut result = ImportResult::default();
     let mut property_budget = 1_000_000usize;
-    let source_depth = match doc.fields.get("project").and_then(|p| integer(p, &["bits_per_channel"])) {
+    read_project_header(next, &doc.fields, &mut result);
+    // A model layer's scale lives on its source item, which the layer pass no longer holds.
+    let mut model_scales = BTreeMap::new();
+    // Create every item before resolving parent folders or precomp references.
+    for raw in &items {
+        create_item(next, &raw.header, source_dir, resolve_media, &mut model_scales, &mut result)?;
+    }
+    // One item's full tree at a time: a template pack's IR is a few hundred MiB of JSON and
+    // several times that as a dynamic tree.
+    for raw in items {
+        let item = &raw.parse()?;
+        import_item_tree(next, item, &model_scales, &mut property_budget, &mut result)?;
+    }
+    markers_essential::bind(next, &mut result.losses);
+    choose_primary_comp(next, &mut result);
+    next.fix_next_id();
+    Ok(result)
+}
+
+/// The project's bit depth, and the losses and media issues the exporter reported.
+fn read_project_header(next: &mut Project, fields: &BTreeMap<String, Json>, result: &mut ImportResult) {
+    let source_depth = match fields.get("project").and_then(|p| integer(p, &["bits_per_channel"])) {
         Some(16) => BitDepth::Bpc16,
         Some(32) => BitDepth::Bpc32,
         _ => BitDepth::Bpc8,
@@ -368,367 +389,433 @@ fn import_doc(next: &mut Project, bytes: &[u8], source_dir: &str, resolve_media:
     } else if next.settings.bit_depth != source_depth {
         result.losses.push("project bit depth differs from imported AEP".into());
     }
-    for loss in doc.fields.get("losses").and_then(Json::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+    for loss in fields.get("losses").and_then(Json::as_array).map(Vec::as_slice).unwrap_or(&[]) {
         result.losses.push(source_issue(loss));
     }
-    for issue in doc.fields.get("media_issues").and_then(Json::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+    for issue in fields.get("media_issues").and_then(Json::as_array).map(Vec::as_slice).unwrap_or(&[]) {
         result.warnings.push(source_issue(issue));
     }
-    // A model layer's scale lives on its source item, which the layer pass no longer holds.
-    let mut model_scales = BTreeMap::new();
-    // Create every item before resolving parent folders or precomp references.
-    for raw in &items {
-        let item = &raw.header;
-        let ae_id = integer(item, &["id"]).ok_or_else(|| AepError::Invalid("item without integer id".into()))?;
-        if result.item_ids.contains_key(&ae_id) {
-            return Err(AepError::Invalid(format!("duplicate item id {ae_id}")));
+}
+
+/// An item's size, frame rate and duration, as every item kind reads them.
+#[derive(Clone, Copy)]
+struct ItemShape {
+    width: u32,
+    height: u32,
+    rate: FrameRate,
+    duration: Tick,
+}
+
+impl ItemShape {
+    fn of(item: &Json) -> Self {
+        let (width, height) = dimensions(item);
+        Self { width, height, rate: ae_frame_rate(number(item, &["frame_rate"])), duration: tick(number(item, &["duration"]).unwrap_or(0.0).max(0.0)) }
+    }
+}
+
+/// Creates one item from its header (no layers yet) and records its ids.
+fn create_item(
+    next: &mut Project,
+    item: &Json,
+    source_dir: &str,
+    resolve_media: &mut dyn FnMut(&str) -> Option<String>,
+    model_scales: &mut BTreeMap<i64, Option<f64>>,
+    result: &mut ImportResult,
+) -> Result<(), AepError> {
+    let ae_id = integer(item, &["id"]).ok_or_else(|| AepError::Invalid("item without integer id".into()))?;
+    if result.item_ids.contains_key(&ae_id) {
+        return Err(AepError::Invalid(format!("duplicate item id {ae_id}")));
+    }
+    model_scales.insert(ae_id, number(item, &["model_scale"]));
+    let kind = string(item, &["kind"]).unwrap_or("unknown");
+    let name = string(item, &["name"]).unwrap_or("Untitled");
+    if ae_id == 0 && kind == "folder" {
+        return Ok(());
+    } // EffectCraft's root folder is implicit.
+    let shape = ItemShape::of(item);
+    let native = match kind {
+        "folder" => ItemKind::Folder,
+        "comp" => ItemKind::Comp(Arc::new(comp_item(item, ae_id, shape, &mut result.losses))),
+        "footage" => footage_item(item, name, shape, source_dir, resolve_media, result),
+        other => {
+            result.losses.push(format!("item {ae_id} ({name}): unsupported kind {other}"));
+            return Ok(());
         }
-        model_scales.insert(ae_id, number(item, &["model_scale"]));
-        let kind = string(item, &["kind"]).unwrap_or("unknown");
-        let name = string(item, &["name"]).unwrap_or("Untitled");
-        if ae_id == 0 && kind == "folder" {
-            continue;
-        } // EffectCraft's root folder is implicit.
-        let (w, h) = dimensions(item);
-        let rate = ae_frame_rate(number(item, &["frame_rate"]));
-        let duration = tick(number(item, &["duration"]).unwrap_or(0.0).max(0.0));
-        let native = match kind {
-            "folder" => ItemKind::Folder,
-            "comp" => {
-                let mut comp = Comp::new(w, h, rate, duration);
-                if let Some(renderer) = string(item, &["renderer"]) {
-                    comp.renderer = match renderer.to_ascii_lowercase().as_str() {
-                        // AE's saved IDs predate their display labels; Adobe restored them after
-                        // an accidental beta rename (community.adobe.com/questions-534/match-names-for-renderers-changing-314356).
-                        "adbe advanced 3d" | "adbe classic 3d" => effectcraft_project::Renderer::Classic3D,
-                        "adbe calder" => effectcraft_project::Renderer::Advanced3D,
-                        _ => {
-                            result.losses.push(format!("comp {ae_id}: unsupported renderer {renderer}"));
-                            effectcraft_project::Renderer::Classic3D
-                        }
-                    };
-                }
-                comp.pixel_aspect = number(item, &["pixel_aspect"]).filter(|v| *v > 0.0).unwrap_or(1.0);
-                comp.display_start = tick(number(item, &["display_start_time"]).unwrap_or(0.0));
-                let work_start = number(item, &["work_area_start"]).unwrap_or(0.0);
-                let work_duration = number(item, &["work_area_duration"]).unwrap_or(duration.seconds());
-                comp.work_area = (tick(work_start), tick(work_start + work_duration.max(0.0)));
-                if let Some(bg) = field(item, &["bg_color", "background_color"]).and_then(Json::as_array) {
-                    for (i, v) in bg.iter().take(3).enumerate() {
-                        comp.background[i] = v.as_f64().unwrap_or(0.0).clamp(0.0, 1.0) as f32;
-                    }
-                }
-                ItemKind::Comp(Arc::new(comp))
-            }
-            "footage" => {
-                let solid = string(item, &["asset_type"]) == Some("solid");
-                let source = string(item, &["file", "path", "file_path", "source_path"]).unwrap_or("");
-                let windows_absolute = source.as_bytes().get(1) == Some(&b':');
-                let candidate = if Path::new(source).is_absolute() || windows_absolute || source_dir.is_empty() {
-                    source.to_owned()
-                } else {
-                    format!("{source_dir}/{source}")
-                };
-                let resolved = string(item, &["resolved_path"])
-                    .filter(|p| Path::new(p).is_file())
-                    .map(str::to_owned)
-                    .or_else(|| if source.is_empty() || solid { None } else { resolve_media(&candidate) });
-                if resolved.is_none() && !solid {
-                    result.missing_media.push(source.to_owned());
-                }
-                if solid {
-                    let color = item.get("color").and_then(Json::as_array);
-                    let channel = |i: usize| color.and_then(|a| a.get(i)).and_then(Json::as_f64).unwrap_or(0.0).clamp(0.0, 1.0) as f32;
-                    ItemKind::Solid(effectcraft_project::Solid {
-                        color: [channel(0), channel(1), channel(2)],
-                        width: w,
-                        height: h,
-                        pixel_aspect: number(item, &["pixel_aspect"]).unwrap_or(1.0),
-                    })
-                } else {
-                    let missing = resolved.is_none();
-                    let media_path = resolved.unwrap_or(candidate);
-                    let model = Path::new(&media_path)
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "glb" | "gltf" | "obj"));
-                    let source_layer = item.get("source_layer").and_then(|raw| {
-                        let layer = effectcraft_project::SourceLayer::deserialize(raw).ok();
-                        match layer {
-                            Some(layer)
-                                if layer.index < 65535
-                                    && layer.crop_bounds.is_none_or(|b| {
-                                        b.iter().all(|v| v.is_finite() && v.abs() <= 1_000_000.0)
-                                            && b[2] > b[0]
-                                            && b[3] > b[1]
-                                            && b[2] - b[0] <= 30000.0
-                                            && b[3] - b[1] <= 30000.0
-                                    }) =>
-                            {
-                                Some(layer)
-                            }
-                            _ => {
-                                result.losses.push(format!("{name}: invalid footage source layer binding"));
-                                None
-                            }
-                        }
-                    });
-                    ItemKind::Footage(Footage {
-                        path: media_path,
-                        layer: source_layer,
-                        kind: if model {
-                            FootageKind::Model
-                        } else if boolean(item, &["has_video"]) == Some(false) {
-                            FootageKind::Audio
-                        } else if duration == Tick::ZERO {
-                            FootageKind::Still
-                        } else {
-                            FootageKind::Video
-                        },
-                        width: w,
-                        height: h,
-                        pixel_aspect: number(item, &["pixel_aspect"]).filter(|v| *v > 0.0).unwrap_or(1.0),
-                        frame_rate: rate,
-                        duration,
-                        has_video: boolean(item, &["has_video"]).unwrap_or(true),
-                        has_audio: boolean(item, &["has_audio"]).unwrap_or(false),
-                        alpha: AlphaMode::Straight,
-                        missing,
-                        ..Footage::default()
-                    })
-                }
-            }
-            other => {
-                result.losses.push(format!("item {ae_id} ({name}): unsupported kind {other}"));
-                continue;
+    };
+    let label = integer(item, &["label"]).and_then(|n| usize::try_from(n).ok()).and_then(|i| Label::ALL.get(i).copied()).unwrap_or(Label::None);
+    let id = next.add_item(name, label, None, native);
+    if let Some(comment) = string(item, &["comment"])
+        && let Some(created) = next.item_mut(id)
+    {
+        created.comment = comment.to_owned();
+    }
+    result.item_ids.insert(ae_id, id);
+    result.items.push(id);
+    if kind == "comp" {
+        result.comps.push(id);
+    }
+    Ok(())
+}
+
+/// A comp item's settings, without its layers.
+fn comp_item(item: &Json, ae_id: i64, shape: ItemShape, losses: &mut Vec<String>) -> Comp {
+    let duration = shape.duration;
+    let mut comp = Comp::new(shape.width, shape.height, shape.rate, duration);
+    if let Some(renderer) = string(item, &["renderer"]) {
+        comp.renderer = match renderer.to_ascii_lowercase().as_str() {
+            // AE's saved IDs predate their display labels; Adobe restored them after
+            // an accidental beta rename (community.adobe.com/questions-534/match-names-for-renderers-changing-314356).
+            "adbe advanced 3d" | "adbe classic 3d" => effectcraft_project::Renderer::Classic3D,
+            "adbe calder" => effectcraft_project::Renderer::Advanced3D,
+            _ => {
+                losses.push(format!("comp {ae_id}: unsupported renderer {renderer}"));
+                effectcraft_project::Renderer::Classic3D
             }
         };
-        let label = integer(item, &["label"]).and_then(|n| usize::try_from(n).ok()).and_then(|i| Label::ALL.get(i).copied()).unwrap_or(Label::None);
-        let id = next.add_item(name, label, None, native);
-        if let Some(comment) = string(item, &["comment"])
-            && let Some(created) = next.item_mut(id)
+    }
+    comp.pixel_aspect = number(item, &["pixel_aspect"]).filter(|v| *v > 0.0).unwrap_or(1.0);
+    comp.display_start = tick(number(item, &["display_start_time"]).unwrap_or(0.0));
+    let work_start = number(item, &["work_area_start"]).unwrap_or(0.0);
+    let work_duration = number(item, &["work_area_duration"]).unwrap_or(duration.seconds());
+    comp.work_area = (tick(work_start), tick(work_start + work_duration.max(0.0)));
+    if let Some(bg) = field(item, &["bg_color", "background_color"]).and_then(Json::as_array) {
+        for (i, v) in bg.iter().take(3).enumerate() {
+            comp.background[i] = v.as_f64().unwrap_or(0.0).clamp(0.0, 1.0) as f32;
+        }
+    }
+    comp
+}
+
+/// A footage item: a solid, or media resolved to a local path (missing media is recorded).
+fn footage_item(
+    item: &Json,
+    name: &str,
+    shape: ItemShape,
+    source_dir: &str,
+    resolve_media: &mut dyn FnMut(&str) -> Option<String>,
+    result: &mut ImportResult,
+) -> ItemKind {
+    let solid = string(item, &["asset_type"]) == Some("solid");
+    let source = string(item, &["file", "path", "file_path", "source_path"]).unwrap_or("");
+    let windows_absolute = source.as_bytes().get(1) == Some(&b':');
+    let candidate =
+        if Path::new(source).is_absolute() || windows_absolute || source_dir.is_empty() { source.to_owned() } else { format!("{source_dir}/{source}") };
+    let resolved = string(item, &["resolved_path"])
+        .filter(|p| Path::new(p).is_file())
+        .map(str::to_owned)
+        .or_else(|| if source.is_empty() || solid { None } else { resolve_media(&candidate) });
+    if resolved.is_none() && !solid {
+        result.missing_media.push(source.to_owned());
+    }
+    if solid {
+        return solid_item(item, shape);
+    }
+    let missing = resolved.is_none();
+    let media_path = resolved.unwrap_or(candidate);
+    let model = Path::new(&media_path).extension().and_then(|e| e.to_str()).is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "glb" | "gltf" | "obj"));
+    let source_layer = footage_source_layer(item, name, &mut result.losses);
+    let duration = shape.duration;
+    ItemKind::Footage(Footage {
+        path: media_path,
+        layer: source_layer,
+        kind: if model {
+            FootageKind::Model
+        } else if boolean(item, &["has_video"]) == Some(false) {
+            FootageKind::Audio
+        } else if duration == Tick::ZERO {
+            FootageKind::Still
+        } else {
+            FootageKind::Video
+        },
+        width: shape.width,
+        height: shape.height,
+        pixel_aspect: number(item, &["pixel_aspect"]).filter(|v| *v > 0.0).unwrap_or(1.0),
+        frame_rate: shape.rate,
+        duration,
+        has_video: boolean(item, &["has_video"]).unwrap_or(true),
+        has_audio: boolean(item, &["has_audio"]).unwrap_or(false),
+        alpha: AlphaMode::Straight,
+        missing,
+        ..Footage::default()
+    })
+}
+
+fn solid_item(item: &Json, shape: ItemShape) -> ItemKind {
+    let color = item.get("color").and_then(Json::as_array);
+    let channel = |i: usize| color.and_then(|a| a.get(i)).and_then(Json::as_f64).unwrap_or(0.0).clamp(0.0, 1.0) as f32;
+    ItemKind::Solid(effectcraft_project::Solid {
+        color: [channel(0), channel(1), channel(2)],
+        width: shape.width,
+        height: shape.height,
+        pixel_aspect: number(item, &["pixel_aspect"]).unwrap_or(1.0),
+    })
+}
+
+/// The footage's source layer binding (a PSD layer, say); an invalid one is a loss.
+fn footage_source_layer(item: &Json, name: &str, losses: &mut Vec<String>) -> Option<effectcraft_project::SourceLayer> {
+    let raw = item.get("source_layer")?;
+    let layer = effectcraft_project::SourceLayer::deserialize(raw).ok();
+    match layer {
+        Some(layer)
+            if layer.index < 65535
+                && layer.crop_bounds.is_none_or(|b| {
+                    b.iter().all(|v| v.is_finite() && v.abs() <= 1_000_000.0) && b[2] > b[0] && b[3] > b[1] && b[2] - b[0] <= 30000.0 && b[3] - b[1] <= 30000.0
+                }) =>
         {
-            created.comment = comment.to_owned();
+            Some(layer)
         }
-        result.item_ids.insert(ae_id, id);
-        result.items.push(id);
-        if kind == "comp" {
-            result.comps.push(id);
-        }
-    }
-    // One item's full tree at a time: a template pack's IR is a few hundred MiB of JSON and
-    // several times that as a dynamic tree.
-    for raw in items {
-        let item = &raw.parse()?;
-        let Some(ae_id) = integer(item, &["id"]) else { continue };
-        let Some(&id) = result.item_ids.get(&ae_id) else { continue };
-        if let Some(parent) = integer(item, &["parent_id"]).filter(|p| *p != 0) {
-            match result.item_ids.get(&parent).copied() {
-                Some(pid) if matches!(next.item(pid).map(|i| &i.kind), Some(ItemKind::Folder)) => {
-                    if let Some(i) = next.item_mut(id) {
-                        i.parent = Some(pid);
-                    }
-                }
-                _ => result.warnings.push(format!("item {ae_id}: missing parent folder {parent}")),
-            }
-        }
-        if !result.comps.contains(&id) {
-            continue;
-        }
-        if item.get("layers").is_some_and(|v| !v.is_array()) {
-            return Err(AepError::Invalid(format!("comp {ae_id}: layers must be an array")));
-        }
-        let Some(mut comp) = next.comp(id).cloned() else { continue };
-        let layers = array(item, "layers");
-        if layers.len() > 100_000 {
-            return Err(AepError::Invalid(format!("comp {ae_id}: too many layers")));
-        }
-        let mut refs = Vec::new();
-        let mut local_ids = BTreeMap::new();
-        for (n, ir) in layers.iter().enumerate() {
-            let ae_layer = integer(ir, &["id", "index"]).unwrap_or((n + 1) as i64);
-            if local_ids.contains_key(&ae_layer) {
-                return Err(AepError::Invalid(format!("comp {ae_id}: duplicate layer id {ae_layer}")));
-            }
-            if ir.get("properties").is_some_and(|v| !v.is_array()) {
-                return Err(AepError::Invalid(format!("comp {ae_id} layer {ae_layer}: properties must be an array")));
-            }
-            let Some(source) = layer_source(ir, next, &result.item_ids, ae_id, &mut result.losses) else { continue };
-            let size = source.item().and_then(|i| next.item(i)).and_then(|i| i.dimensions()).unwrap_or((comp.width, comp.height));
-            let name = string(ir, &["name"]).unwrap_or(source.type_name());
-            let mut layer = build::layer(next, &comp, name, source, size, None);
-            layer.name = name.to_owned();
-            let timing = ir.get("timing").unwrap_or(ir);
-            layer.start_time = tick(number(timing, &["start_time"]).unwrap_or(0.0));
-            layer.in_point = frame_tick(number(timing, &["in_point"]).unwrap_or(0.0), comp.frame_rate);
-            layer.out_point = frame_tick(number(timing, &["out_point"]).unwrap_or(comp.duration.seconds()), comp.frame_rate);
-            layer.stretch = number(timing, &["stretch"]).filter(|v| v.abs() > f64::EPSILON).unwrap_or(100.0);
-            if let Some(sw) = ir.get("switches") {
-                apply_switches(sw, &mut layer.switches);
-                layer.preserve_transparency = boolean(sw, &["preserve_transparency"]).unwrap_or(false);
-                layer.environment = boolean(sw, &["environment_layer"]).unwrap_or(false);
-            }
-            apply_auto_orient(ir, &mut layer, &mut result.losses, &format!("comp {ae_id} layer {ae_layer}"));
-            if let Some(blend) = string(ir, &["blend_mode"]) {
-                if let Some(mode) = BlendMode::from_name(blend) {
-                    layer.blend_mode = mode;
-                } else {
-                    result.losses.push(format!("comp {ae_id} layer {ae_layer}: blend mode {blend}"));
-                }
-            } else if let Some(raw) = ir.get("switches").and_then(|s| integer(s, &["blending_mode"])) {
-                if let Some(mode) = blend_from_ae(raw) {
-                    layer.blend_mode = mode;
-                } else {
-                    result.losses.push(format!("comp {ae_id} layer {ae_layer}: unknown blend mode {raw}"));
-                }
-            }
-            for prop in array(ir, "properties") {
-                if !check_property_budget(prop, &mut property_budget, 0) {
-                    return Err(AepError::Invalid(format!("comp {ae_id} layer {ae_layer}: property or keyframe limit exceeded")));
-                }
-            }
-            let poi_anchor = layer.auto_orient == effectcraft_project::AutoOrient::TowardsPointOfInterest
-                && matches!(&layer.source, LayerSource::Camera | LayerSource::Light { .. });
-            let layer_time = LayerTime::of(&layer);
-            for prop in array(ir, "properties") {
-                if string(prop, &["match_name"]) == Some("ADBE Time Remapping")
-                    && ir.get("switches").and_then(|sw| boolean(sw, &["time_remap_enabled"])) != Some(true)
-                {
-                    if !array(prop, "keyframes").is_empty() || string(prop, &["expression"]).is_some_and(|s| !s.is_empty()) {
-                        result.losses.push(format!("comp {ae_id} layer {ae_layer}: disabled Time Remap animation retained but not applied"));
-                        let value_type = string(prop, &["value_type"]).unwrap_or("");
-                        let value = prop
-                            .get("value")
-                            .and_then(|v| convert_value(v, value_type))
-                            .or_else(|| array(prop, "keyframes").first().and_then(|k| k.get("value")).and_then(|v| convert_value(v, value_type)));
-                        if let Some(value) = value {
-                            let mut inactive = Property::new(next.alloc(), "ADBE Time Remapping", "Time Remap (disabled)", value.clone());
-                            fill_property(
-                                &mut inactive,
-                                prop,
-                                value,
-                                value_type,
-                                1.0,
-                                layer_time,
-                                &mut result.losses,
-                                &format!("comp {ae_id} layer {ae_layer}"),
-                            );
-                            layer.props.children.push(Node::Prop(inactive));
-                        } else {
-                            result.losses.push(format!("comp {ae_id} layer {ae_layer}: disabled Time Remap value is unsupported"));
-                        }
-                    }
-                    continue;
-                }
-                if string(prop, &["match_name"]) == Some("ADBE Marker") {
-                    markers_essential::markers(
-                        &mut layer.markers,
-                        prop,
-                        comp.frame_rate.as_f64(),
-                        layer_time,
-                        &mut result.losses,
-                        &format!("comp {ae_id} layer {ae_layer}"),
-                    );
-                    continue;
-                }
-                if string(prop, &["match_name"]) == Some("ADBE Layer Overrides") {
-                    markers_essential::overrides(next, &mut layer, prop, &mut result.losses, &format!("comp {ae_id} layer {ae_layer}"));
-                    continue;
-                }
-                if string(prop, &["match_name"]) == Some("ADBE Layer Styles") {
-                    styles::import(next, &mut layer, prop, &mut result.losses, &format!("comp {ae_id} layer {ae_layer}"));
-                    continue;
-                }
-                import_property(
-                    next,
-                    &mut layer.props,
-                    prop,
-                    0,
-                    [size.0 as f64, size.1 as f64],
-                    comp.frame_rate.as_f64(),
-                    poi_anchor,
-                    layer_time,
-                    &mut result.losses,
-                    &format!("comp {ae_id} layer {ae_layer}"),
-                );
-            }
-            place_unauthored_camera_eye(&mut layer, ir);
-            if matches!(&layer.source, LayerSource::Light { kind: effectcraft_project::LightKind::Environment }) {
-                keep_environment_light_defaults(&mut layer, &mut result.losses, &format!("comp {ae_id} layer {ae_layer}"));
-            }
-            if matches!(&layer.source, LayerSource::Model { .. }) {
-                let model_scale = integer(ir, &["source_id"]).and_then(|id| model_scales.get(&id).copied().flatten());
-                models3d::import(next, &mut layer, ir, model_scale, &mut result.losses, &format!("comp {ae_id} layer {ae_layer}"));
-                result.losses.push(format!("comp {ae_id} layer {ae_layer}: 3D model coordinate/render parity with AE is unverified"));
-            }
-            local_ids.insert(ae_layer, layer.id);
-            result.layer_ids.insert((ae_id, ae_layer), layer.id);
-            refs.push((layer.id, integer(ir, &["parent_id"]), ir.get("matte").filter(|m| !m.is_null())));
-            comp.layers.push(layer);
-        }
-        for (id, parent, matte) in refs {
-            if let Some(layer) = comp.layer_mut(id) {
-                if let Some(p) = parent {
-                    layer.parent = local_ids.get(&p).copied();
-                }
-                if let Some(m) = matte {
-                    let mid = integer(m, &["layer_id"]);
-                    let kind = match m.get("type") {
-                        Some(Json::Number(n)) => match n.as_i64() {
-                            Some(5013) => Some(MatteKind::Alpha),
-                            Some(5014) => Some(MatteKind::AlphaInverted),
-                            Some(5015) => Some(MatteKind::Luma),
-                            Some(5016) => Some(MatteKind::LumaInverted),
-                            _ => None,
-                        },
-                        Some(Json::String(s)) => match s.to_ascii_lowercase().as_str() {
-                            "alpha" => Some(MatteKind::Alpha),
-                            "alpha_inverted" | "alphainverted" => Some(MatteKind::AlphaInverted),
-                            "luma" => Some(MatteKind::Luma),
-                            "luma_inverted" | "lumainverted" => Some(MatteKind::LumaInverted),
-                            _ => None,
-                        },
-                        _ => None,
-                    };
-                    layer.track_matte = mid.and_then(|m| local_ids.get(&m).copied()).zip(kind).map(|(layer, kind)| TrackMatte { layer, kind });
-                    if layer.track_matte.is_none() {
-                        result.losses.push(format!("comp {ae_id} layer {}: unresolved matte", id.0));
-                    }
-                }
-            }
-        }
-        // AE effect layer selectors store 1-based timeline indices, while native
-        // effect controls store stable layer IDs. Resolve after every layer exists.
-        let mut by_index = BTreeMap::<u64, Option<u64>>::new();
-        for source_layer in array(item, "layers") {
-            let Some(index) = integer(source_layer, &["index"]).and_then(|n| u64::try_from(n).ok()).filter(|n| *n > 0) else { continue };
-            let uid = integer(source_layer, &["id"]).and_then(|id| local_ids.get(&id)).map(|id| id.0);
-            by_index.entry(index).and_modify(|slot| *slot = None).or_insert(uid);
-        }
-        for layer in &mut comp.layers {
-            let context = format!("comp {ae_id} layer {}", layer.name);
-            layer.props.walk_mut(&mut |prop| resolve_layer_refs(prop, &by_index, &mut result.losses, &context));
-        }
-        if item.get("default_camera").is_none() && comp.has_3d() {
-            result.losses.push(format!("comp {ae_id}: 3D content has no default_camera field in this IR version"));
-        }
-        if let Some(default) = item.get("default_camera").filter(|v| !v.is_null()) {
-            let (ae_camera, camera) = import_implicit_camera(next, &comp, ae_id, default, &mut property_budget, &mut result.losses)?;
-            if local_ids.contains_key(&ae_camera) {
-                return Err(AepError::Invalid(format!("comp {ae_id}: implicit camera id {ae_camera} collides with a timeline layer")));
-            }
-            result.implicit_camera_ids.insert((ae_id, ae_camera), camera.id);
-            comp.layers.push(camera); // bottom-most: explicit active cameras above it win.
-        }
-        if comp.layers.iter().any(|l| matches!(&l.source, LayerSource::Model { .. })) {
-            comp.renderer = effectcraft_project::Renderer::Advanced3D;
-        }
-        orient::ae_orientation(&mut comp, &mut result.losses, &format!("comp {ae_id}"));
-        if let Some(i) = next.item_mut(id) {
-            i.kind = ItemKind::Comp(Arc::new(comp));
+        _ => {
+            losses.push(format!("{name}: invalid footage source layer binding"));
+            None
         }
     }
-    markers_essential::bind(next, &mut result.losses);
+}
+
+/// The second pass over one item: its parent folder and, for a comp, its layers and cameras.
+fn import_item_tree(
+    next: &mut Project,
+    item: &Json,
+    model_scales: &BTreeMap<i64, Option<f64>>,
+    property_budget: &mut usize,
+    result: &mut ImportResult,
+) -> Result<(), AepError> {
+    let Some(ae_id) = integer(item, &["id"]) else { return Ok(()) };
+    let Some(&id) = result.item_ids.get(&ae_id) else { return Ok(()) };
+    set_parent_folder(next, item, ae_id, id, result);
+    if !result.comps.contains(&id) {
+        return Ok(());
+    }
+    if item.get("layers").is_some_and(|v| !v.is_array()) {
+        return Err(AepError::Invalid(format!("comp {ae_id}: layers must be an array")));
+    }
+    let Some(mut comp) = next.comp(id).cloned() else { return Ok(()) };
+    let layers = array(item, "layers");
+    if layers.len() > 100_000 {
+        return Err(AepError::Invalid(format!("comp {ae_id}: too many layers")));
+    }
+    let mut refs = Vec::new();
+    let mut local_ids = BTreeMap::new();
+    for (n, ir) in layers.iter().enumerate() {
+        let ae_layer = integer(ir, &["id", "index"]).unwrap_or((n + 1) as i64);
+        if local_ids.contains_key(&ae_layer) {
+            return Err(AepError::Invalid(format!("comp {ae_id}: duplicate layer id {ae_layer}")));
+        }
+        if ir.get("properties").is_some_and(|v| !v.is_array()) {
+            return Err(AepError::Invalid(format!("comp {ae_id} layer {ae_layer}: properties must be an array")));
+        }
+        let key = LayerKey { comp: ae_id, layer: ae_layer };
+        let Some(layer) = import_layer(next, &comp, ir, key, model_scales, property_budget, result)? else { continue };
+        local_ids.insert(ae_layer, layer.id);
+        result.layer_ids.insert((ae_id, ae_layer), layer.id);
+        refs.push((layer.id, integer(ir, &["parent_id"]), ir.get("matte").filter(|m| !m.is_null())));
+        comp.layers.push(layer);
+    }
+    link_parents_and_mattes(&mut comp, refs, &local_ids, ae_id, &mut result.losses);
+    resolve_layer_indices(&mut comp, item, &local_ids, ae_id, &mut result.losses);
+    if item.get("default_camera").is_none() && comp.has_3d() {
+        result.losses.push(format!("comp {ae_id}: 3D content has no default_camera field in this IR version"));
+    }
+    if let Some(default) = item.get("default_camera").filter(|v| !v.is_null()) {
+        let (ae_camera, camera) = import_implicit_camera(next, &comp, ae_id, default, property_budget, &mut result.losses)?;
+        if local_ids.contains_key(&ae_camera) {
+            return Err(AepError::Invalid(format!("comp {ae_id}: implicit camera id {ae_camera} collides with a timeline layer")));
+        }
+        result.implicit_camera_ids.insert((ae_id, ae_camera), camera.id);
+        comp.layers.push(camera); // bottom-most: explicit active cameras above it win.
+    }
+    if comp.layers.iter().any(|l| matches!(&l.source, LayerSource::Model { .. })) {
+        comp.renderer = effectcraft_project::Renderer::Advanced3D;
+    }
+    orient::ae_orientation(&mut comp, &mut result.losses, &format!("comp {ae_id}"));
+    if let Some(i) = next.item_mut(id) {
+        i.kind = ItemKind::Comp(Arc::new(comp));
+    }
+    Ok(())
+}
+
+fn set_parent_folder(next: &mut Project, item: &Json, ae_id: i64, id: ItemId, result: &mut ImportResult) {
+    let Some(parent) = integer(item, &["parent_id"]).filter(|p| *p != 0) else { return };
+    match result.item_ids.get(&parent).copied() {
+        Some(pid) if matches!(next.item(pid).map(|i| &i.kind), Some(ItemKind::Folder)) => {
+            if let Some(i) = next.item_mut(id) {
+                i.parent = Some(pid);
+            }
+        }
+        _ => result.warnings.push(format!("item {ae_id}: missing parent folder {parent}")),
+    }
+}
+
+/// An AE layer's address: its comp's id and its own id (or timeline index).
+#[derive(Clone, Copy)]
+struct LayerKey {
+    comp: i64,
+    layer: i64,
+}
+
+impl LayerKey {
+    /// The prefix of this layer's losses and errors.
+    fn context(self) -> String {
+        format!("comp {} layer {}", self.comp, self.layer)
+    }
+}
+
+/// One timeline layer of a comp, or None when its source is missing (a loss).
+fn import_layer(
+    next: &mut Project,
+    comp: &Comp,
+    ir: &Json,
+    key: LayerKey,
+    model_scales: &BTreeMap<i64, Option<f64>>,
+    property_budget: &mut usize,
+    result: &mut ImportResult,
+) -> Result<Option<Layer>, AepError> {
+    let context = key.context();
+    let Some(source) = layer_source(ir, next, &result.item_ids, key.comp, &mut result.losses) else { return Ok(None) };
+    let size = source.item().and_then(|i| next.item(i)).and_then(|i| i.dimensions()).unwrap_or((comp.width, comp.height));
+    let name = string(ir, &["name"]).unwrap_or(source.type_name());
+    let mut layer = build::layer(next, comp, name, source, size, None);
+    layer.name = name.to_owned();
+    let timing = ir.get("timing").unwrap_or(ir);
+    layer.start_time = tick(number(timing, &["start_time"]).unwrap_or(0.0));
+    layer.in_point = frame_tick(number(timing, &["in_point"]).unwrap_or(0.0), comp.frame_rate);
+    layer.out_point = frame_tick(number(timing, &["out_point"]).unwrap_or(comp.duration.seconds()), comp.frame_rate);
+    layer.stretch = number(timing, &["stretch"]).filter(|v| v.abs() > f64::EPSILON).unwrap_or(100.0);
+    if let Some(sw) = ir.get("switches") {
+        apply_switches(sw, &mut layer.switches);
+        layer.preserve_transparency = boolean(sw, &["preserve_transparency"]).unwrap_or(false);
+        layer.environment = boolean(sw, &["environment_layer"]).unwrap_or(false);
+    }
+    apply_auto_orient(ir, &mut layer, &mut result.losses, &context);
+    apply_blend_mode(ir, &mut layer, &mut result.losses, &context);
+    for prop in array(ir, "properties") {
+        if !check_property_budget(prop, property_budget, 0) {
+            return Err(AepError::Invalid(format!("{context}: property or keyframe limit exceeded")));
+        }
+    }
+    let scope = PropScope::of(&layer, [size.0 as f64, size.1 as f64], comp.frame_rate.as_f64());
+    import_layer_properties(next, &mut layer, ir, scope, &mut result.losses, &context);
+    place_unauthored_camera_eye(&mut layer, ir);
+    if matches!(&layer.source, LayerSource::Light { kind: effectcraft_project::LightKind::Environment }) {
+        keep_environment_light_defaults(&mut layer, &mut result.losses, &context);
+    }
+    if matches!(&layer.source, LayerSource::Model { .. }) {
+        let model_scale = integer(ir, &["source_id"]).and_then(|id| model_scales.get(&id).copied().flatten());
+        models3d::import(next, &mut layer, ir, model_scale, &mut result.losses, &context);
+        result.losses.push(format!("{context}: 3D model coordinate/render parity with AE is unverified"));
+    }
+    Ok(Some(layer))
+}
+
+fn apply_blend_mode(ir: &Json, layer: &mut Layer, losses: &mut Vec<String>, context: &str) {
+    if let Some(blend) = string(ir, &["blend_mode"]) {
+        if let Some(mode) = BlendMode::from_name(blend) {
+            layer.blend_mode = mode;
+        } else {
+            losses.push(format!("{context}: blend mode {blend}"));
+        }
+    } else if let Some(raw) = ir.get("switches").and_then(|s| integer(s, &["blending_mode"])) {
+        if let Some(mode) = blend_from_ae(raw) {
+            layer.blend_mode = mode;
+        } else {
+            losses.push(format!("{context}: unknown blend mode {raw}"));
+        }
+    }
+}
+
+/// A layer's property streams; markers, overrides and layer styles go to their own importers.
+fn import_layer_properties(next: &mut Project, layer: &mut Layer, ir: &Json, scope: PropScope, losses: &mut Vec<String>, context: &str) {
+    let time_remap_enabled = ir.get("switches").and_then(|sw| boolean(sw, &["time_remap_enabled"])) == Some(true);
+    for prop in array(ir, "properties") {
+        match string(prop, &["match_name"]) {
+            Some("ADBE Time Remapping") if !time_remap_enabled => import_disabled_time_remap(next, layer, prop, scope.layer_time, losses, context),
+            Some("ADBE Marker") => markers_essential::markers(&mut layer.markers, prop, scope.fps, scope.layer_time, losses, context),
+            Some("ADBE Layer Overrides") => markers_essential::overrides(next, layer, prop, losses, context),
+            Some("ADBE Layer Styles") => styles::import(next, layer, prop, losses, context),
+            _ => import_property(next, &mut layer.props, prop, 0, scope, losses, context),
+        }
+    }
+}
+
+/// A disabled Time Remap with animation is kept as an inactive property, not applied.
+fn import_disabled_time_remap(next: &mut Project, layer: &mut Layer, prop: &Json, layer_time: LayerTime, losses: &mut Vec<String>, context: &str) {
+    if !(!array(prop, "keyframes").is_empty() || string(prop, &["expression"]).is_some_and(|s| !s.is_empty())) {
+        return;
+    }
+    losses.push(format!("{context}: disabled Time Remap animation retained but not applied"));
+    let value_type = string(prop, &["value_type"]).unwrap_or("");
+    let value = prop
+        .get("value")
+        .and_then(|v| convert_value(v, value_type))
+        .or_else(|| array(prop, "keyframes").first().and_then(|k| k.get("value")).and_then(|v| convert_value(v, value_type)));
+    if let Some(value) = value {
+        let mut inactive = Property::new(next.alloc(), "ADBE Time Remapping", "Time Remap (disabled)", value.clone());
+        fill_property(&mut inactive, prop, value, Fill::plain(value_type), layer_time, losses, context);
+        layer.props.children.push(Node::Prop(inactive));
+    } else {
+        losses.push(format!("{context}: disabled Time Remap value is unsupported"));
+    }
+}
+
+/// Parents and track mattes, once every layer of the comp exists.
+fn link_parents_and_mattes(
+    comp: &mut Comp,
+    refs: Vec<(LayerId, Option<i64>, Option<&Json>)>,
+    local_ids: &BTreeMap<i64, LayerId>,
+    ae_id: i64,
+    losses: &mut Vec<String>,
+) {
+    for (id, parent, matte) in refs {
+        let Some(layer) = comp.layer_mut(id) else { continue };
+        if let Some(p) = parent {
+            layer.parent = local_ids.get(&p).copied();
+        }
+        if let Some(m) = matte {
+            let mid = integer(m, &["layer_id"]);
+            layer.track_matte = mid.and_then(|m| local_ids.get(&m).copied()).zip(matte_kind(m)).map(|(layer, kind)| TrackMatte { layer, kind });
+            if layer.track_matte.is_none() {
+                losses.push(format!("comp {ae_id} layer {}: unresolved matte", id.0));
+            }
+        }
+    }
+}
+
+fn matte_kind(m: &Json) -> Option<MatteKind> {
+    match m.get("type") {
+        Some(Json::Number(n)) => match n.as_i64() {
+            Some(5013) => Some(MatteKind::Alpha),
+            Some(5014) => Some(MatteKind::AlphaInverted),
+            Some(5015) => Some(MatteKind::Luma),
+            Some(5016) => Some(MatteKind::LumaInverted),
+            _ => None,
+        },
+        Some(Json::String(s)) => match s.to_ascii_lowercase().as_str() {
+            "alpha" => Some(MatteKind::Alpha),
+            "alpha_inverted" | "alphainverted" => Some(MatteKind::AlphaInverted),
+            "luma" => Some(MatteKind::Luma),
+            "luma_inverted" | "lumainverted" => Some(MatteKind::LumaInverted),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// AE effect layer selectors store 1-based timeline indices, while native
+/// effect controls store stable layer IDs. Resolve after every layer exists.
+fn resolve_layer_indices(comp: &mut Comp, item: &Json, local_ids: &BTreeMap<i64, LayerId>, ae_id: i64, losses: &mut Vec<String>) {
+    let mut by_index = BTreeMap::<u64, Option<u64>>::new();
+    for source_layer in array(item, "layers") {
+        let Some(index) = integer(source_layer, &["index"]).and_then(|n| u64::try_from(n).ok()).filter(|n| *n > 0) else { continue };
+        let uid = integer(source_layer, &["id"]).and_then(|id| local_ids.get(&id)).map(|id| id.0);
+        by_index.entry(index).and_modify(|slot| *slot = None).or_insert(uid);
+    }
+    for layer in &mut comp.layers {
+        let context = format!("comp {ae_id} layer {}", layer.name);
+        layer.props.walk_mut(&mut |prop| resolve_layer_refs(prop, &by_index, losses, &context));
+    }
+}
+
+/// The primary comp: a top-level comp named like "Main" or "Final", else the first one.
+fn choose_primary_comp(next: &Project, result: &mut ImportResult) {
     let referenced: std::collections::BTreeSet<ItemId> =
         next.comps().flat_map(|(_, c)| c.layers.iter().filter_map(|l| if let LayerSource::Comp { item } = &l.source { Some(*item) } else { None })).collect();
     let roots: Vec<ItemId> = result.comps.iter().copied().filter(|id| !referenced.contains(id)).collect();
@@ -741,8 +828,6 @@ fn import_doc(next: &mut Project, bytes: &[u8], source_dir: &str, resolve_media:
     if roots.len() > 1 && !roots.iter().any(|id| next.item(*id).is_some_and(|i| preferred_comp_name(&i.name))) {
         result.warnings.push(format!("{} top-level compositions; selected first as primary", roots.len()));
     }
-    next.fix_next_id();
-    Ok(result)
 }
 
 fn import_implicit_camera(
@@ -795,20 +880,10 @@ fn import_implicit_camera(
     {
         p.value = Value::Scalar(zoom);
     }
-    let layer_time = LayerTime::of(&camera);
+    let scope =
+        PropScope { size: [comp.width as f64, comp.height as f64], fps: comp.frame_rate.as_f64(), poi_anchor: true, layer_time: LayerTime::of(&camera) };
     for prop in array(ir, "properties") {
-        import_property(
-            project,
-            &mut camera.props,
-            prop,
-            0,
-            [comp.width as f64, comp.height as f64],
-            comp.frame_rate.as_f64(),
-            true,
-            layer_time,
-            losses,
-            &format!("comp {ae_comp} implicit camera {ae_id}"),
-        );
+        import_property(project, &mut camera.props, prop, 0, scope, losses, &format!("comp {ae_comp} implicit camera {ae_id}"));
     }
     if default_eye && let Some(position_prop) = camera.transform_mut().and_then(|transform| transform.get_mut("position")) {
         position_prop.value = Value::Vec3([position[0], position[1], eye_z]);
@@ -1176,23 +1251,56 @@ fn native_match(ae: &str) -> &str {
     }
 }
 
-fn import_property(
-    project: &mut Project,
-    parent: &mut PropGroup,
-    ir: &Json,
-    depth: usize,
+/// What every property of one layer shares: the layer's size and frame rate, whether its
+/// Anchor Point is a Point of Interest (an auto-oriented camera or light), and its clock.
+#[derive(Clone, Copy)]
+struct PropScope {
     size: [f64; 2],
     fps: f64,
     poi_anchor: bool,
     layer_time: LayerTime,
-    losses: &mut Vec<String>,
-    context: &str,
-) {
+}
+
+impl PropScope {
+    fn of(layer: &Layer, size: [f64; 2], fps: f64) -> Self {
+        let poi_anchor = layer.auto_orient == effectcraft_project::AutoOrient::TowardsPointOfInterest
+            && matches!(&layer.source, LayerSource::Camera | LayerSource::Light { .. });
+        Self { size, fps, poi_anchor, layer_time: LayerTime::of(layer) }
+    }
+}
+
+/// One AE property node being imported, with the names it imports under.
+#[derive(Clone, Copy)]
+struct PropNode<'a> {
+    ir: &'a Json,
+    depth: usize,
+    ae_match: &'a str,
+    match_id: &'a str,
+    name: &'a str,
+}
+
+fn import_property(project: &mut Project, parent: &mut PropGroup, ir: &Json, depth: usize, scope: PropScope, losses: &mut Vec<String>, context: &str) {
     if depth >= 64 {
         losses.push(format!("{context}: property depth exceeds 64"));
         return;
     }
     let ae_match = string(ir, &["match_name"]).unwrap_or("");
+    let match_id = property_match_id(parent, ir, ae_match, scope.poi_anchor);
+    let name = string(ir, &["name"]).unwrap_or(match_id);
+    let kind = string(ir, &["kind"]).unwrap_or("unknown");
+    note_unapplied_groups(ir, ae_match, name, losses, context);
+    let node = PropNode { ir, depth, ae_match, match_id, name };
+    if kind == "group" || !array(ir, "children").is_empty() {
+        import_group(project, parent, node, scope, losses, context);
+    } else if kind == "property" {
+        import_value_property(project, parent, node, scope.layer_time, losses, context);
+    } else {
+        losses.push(format!("{context}: unknown property node {name}"));
+    }
+}
+
+/// The native match id an AE property imports under, inside `parent`.
+fn property_match_id<'a>(parent: &PropGroup, ir: &Json, ae_match: &'a str, poi_anchor: bool) -> &'a str {
     let mut match_id = native_match(ae_match);
     if let Some(native) = text_anim::native_match(parent.match_id.as_str(), ae_match, boolean(ir, &["authored"])) {
         match_id = native;
@@ -1205,8 +1313,11 @@ fn import_property(
     {
         match_id = native;
     }
-    let name = string(ir, &["name"]).unwrap_or(match_id);
-    let kind = string(ir, &["kind"]).unwrap_or("unknown");
+    match_id
+}
+
+/// Losses for AE groups kept as editable properties that nothing renders.
+fn note_unapplied_groups(ir: &Json, ae_match: &str, name: &str, losses: &mut Vec<String>, context: &str) {
     if ae_match == "ADBE Text Animators"
         && array(ir, "children").iter().any(|child| boolean(child, &["enabled"]).unwrap_or(true))
         && !text_anim::fully_supported(ir)
@@ -1219,243 +1330,274 @@ fn import_property(
     {
         losses.push(format!("{context}: {name} is preserved as editable properties but not applied natively"));
     }
-    if kind == "group" || !array(ir, "children").is_empty() {
-        if parent.match_id == "effects"
-            && ae_match == "MB LookSuite3"
-            && let Some(encoded) = string(ir, &["mbl2_state_hex"])
-        {
-            match looks::parse_hex(encoded) {
-                Ok(state) => {
-                    let mut group = state.editable_group(project, name, losses, context);
-                    group.enabled = boolean(ir, &["enabled"]).unwrap_or(true);
-                    for child in array(ir, "children") {
-                        import_property(project, &mut group, child, depth + 1, size, fps, poi_anchor, layer_time, losses, context);
-                    }
-                    parent.children.push(Node::Group(group));
-                    return;
+}
+
+fn import_group(project: &mut Project, parent: &mut PropGroup, node: PropNode, scope: PropScope, losses: &mut Vec<String>, context: &str) {
+    let PropNode { ir, depth, ae_match, .. } = node;
+    if parent.match_id == "effects"
+        && ae_match == "MB LookSuite3"
+        && let Some(encoded) = string(ir, &["mbl2_state_hex"])
+    {
+        match looks::parse_hex(encoded) {
+            Ok(state) => {
+                let mut group = state.editable_group(project, node.name, losses, context);
+                group.enabled = boolean(ir, &["enabled"]).unwrap_or(true);
+                for child in array(ir, "children") {
+                    import_property(project, &mut group, child, depth + 1, scope, losses, context);
                 }
-                Err(error) => losses.push(format!("{context}: invalid MB LookSuite3 state: {error}")),
+                parent.children.push(Node::Group(group));
+                return;
             }
+            Err(error) => losses.push(format!("{context}: invalid MB LookSuite3 state: {error}")),
         }
-        if parent.match_id == "effects"
-            && let Some(spec) = effects::effect_id(ae_match).and_then(effectcraft_effects::find)
-        {
-            let mut group = effectcraft_effects::instantiate(spec, &mut build::Ids(&mut project.next_id), name, size);
-            group.enabled = boolean(ir, &["enabled"]).unwrap_or(true);
-            if matches!(spec.id, "ec.perspective.shadowstudio2" | "ec.perspective.shadowstudio3") {
-                losses.push(format!("{context}: Shadow Studio native directional rendering is approximate; visual parity unverified"));
-            }
-            if spec.id == effectcraft_effects::puppet::ID {
-                puppet::import(project, &mut group, ir, layer_time, losses, context);
-            } else if spec.id == effectcraft_effects::roto::ID {
-                roto::import(project, &mut group, ir, size, fps, layer_time, losses, context);
-            } else {
-                if spec.id == "ec.color.curves" {
-                    import_curves_state(&mut group, ir, losses, context);
-                }
-                import_native_effect_params(project, &mut group, ir, ir, spec.id, layer_time, losses, context, depth + 1);
-                if spec.id == "ec.color.colorama" {
-                    import_colorama_cycle(&mut group, ir, losses, context);
-                }
-                if spec.id == "S_CartoonPaint" {
-                    losses.push(format!("{context}: S_CartoonPaint brush-stroke rendering is approximate; visual parity unverified"));
-                }
-            }
-            if spec.id == "ec.perspective.ccsphere"
-                && group.prop("metal").is_some_and(|metal| {
-                    metal.value.as_f64() != 0.0
-                        || metal.keys.iter().any(|key| key.value.as_f64() != 0.0)
-                        || metal.expr.as_ref().is_some_and(|expression| expression.enabled)
-                })
+    }
+    if parent.match_id == "effects"
+        && let Some(spec) = effects::effect_id(ae_match).and_then(effectcraft_effects::find)
+    {
+        let group = import_native_effect(project, spec, node, scope, losses, context);
+        parent.children.push(Node::Group(group));
+        return;
+    }
+    let at = group_slot(project, parent, node, losses, context);
+    if let Some(Node::Group(group)) = parent.children.get_mut(at) {
+        group.enabled = boolean(ir, &["enabled"]).unwrap_or(true);
+        if let Some(meta) = ir.get("metadata") {
+            apply_mask_metadata(&mut group.kind, meta, losses, context);
+        }
+        let separated = ae_match == "ADBE Transform Group"
+            && array(ir, "children")
+                .iter()
+                .find(|child| string(child, &["match_name"]) == Some("ADBE Position"))
+                .and_then(|position| boolean(position, &["dimensions_separated"]))
+                == Some(true);
+        for child in array(ir, "children") {
+            if ae_match == "ADBE Transform Group"
+                && matches!(string(child, &["match_name"]), Some("ADBE Position_0" | "ADBE Position_1" | "ADBE Position_2"))
+                && !separated
             {
-                losses.push(format!("{context}: CC Sphere metal specular approximation; AE parity unverified"));
+                continue;
             }
-            parent.children.push(Node::Group(group));
-            return;
+            import_property(project, group, child, depth + 1, scope, losses, context);
         }
-        let indexed =
-            matches!(parent.match_id.as_str(), "contents" | "effects" | "masks" | "animators" | "selectors") || matches!(parent.kind, GroupKind::Indexed);
-        let existing = if indexed { None } else { parent.children.iter().position(|n| n.match_id() == match_id && matches!(n, Node::Group(_))) };
-        let at = if let Some(at) = existing {
-            at
-        } else {
-            let mut group = if parent.match_id == "masks" && match_id == "mask" {
-                let index = parent.children.len();
-                build::mask(
-                    &mut build::Ids(&mut project.next_id),
-                    name,
-                    ShapePath::default(),
-                    effectcraft_project::MaskMode::Add,
-                    build::MASK_COLORS[index % build::MASK_COLORS.len()],
-                )
-            } else {
-                PropGroup::new(project.alloc(), match_id, name)
-            };
-            if matches!(match_id, "animator" | "rangeSelector") {
-                group.kind = GroupKind::Indexed;
-            }
-            if parent.match_id == "effects" {
-                if !effects::control_only(ae_match) {
-                    losses.push(format!("{context}: effect {ae_match} has no native renderer"));
-                }
-            } else if parent.match_id == "contents" {
-                group.kind = GroupKind::Indexed;
-            }
-            parent.children.push(Node::Group(group));
-            parent.children.len() - 1
-        };
-        if let Some(Node::Group(group)) = parent.children.get_mut(at) {
-            group.enabled = boolean(ir, &["enabled"]).unwrap_or(true);
-            if let GroupKind::Mask { mode, inverted, color, locked, motion_blur, feather_falloff, roto_bezier } = &mut group.kind
-                && let Some(meta) = ir.get("metadata")
-            {
-                if let Some(raw) = integer(meta, &["mask_mode"]) {
-                    *mode = match raw {
-                        6812 => effectcraft_project::MaskMode::None,
-                        6813 => effectcraft_project::MaskMode::Add,
-                        6814 => effectcraft_project::MaskMode::Subtract,
-                        6815 => effectcraft_project::MaskMode::Intersect,
-                        6816 => effectcraft_project::MaskMode::Lighten,
-                        6817 => effectcraft_project::MaskMode::Darken,
-                        6818 => effectcraft_project::MaskMode::Difference,
-                        _ => {
-                            losses.push(format!("{context}: unknown mask mode {raw}"));
-                            effectcraft_project::MaskMode::Add
-                        }
-                    };
-                }
-                if let Some(v) = boolean(meta, &["inverted"]) {
-                    *inverted = v;
-                }
-                if let Some(v) = boolean(meta, &["locked"]) {
-                    *locked = v;
-                }
-                if let Some(v) = boolean(meta, &["roto_bezier"]) {
-                    *roto_bezier = v;
-                }
-                if let Some(v) = integer(meta, &["mask_motion_blur"]) {
-                    *motion_blur = match v {
-                        7012 => effectcraft_project::MaskMotionBlur::SameAsLayer,
-                        7013 => effectcraft_project::MaskMotionBlur::On,
-                        7014 => effectcraft_project::MaskMotionBlur::Off,
-                        _ => {
-                            losses.push(format!("{context}: unknown mask motion blur {v}"));
-                            effectcraft_project::MaskMotionBlur::SameAsLayer
-                        }
-                    };
-                }
-                if let Some(v) = integer(meta, &["mask_feather_falloff"]) {
-                    *feather_falloff = match v {
-                        7212 => effectcraft_project::FeatherFalloff::Smooth,
-                        7213 => effectcraft_project::FeatherFalloff::Linear,
-                        _ => {
-                            losses.push(format!("{context}: unknown mask feather falloff {v}"));
-                            effectcraft_project::FeatherFalloff::Smooth
-                        }
-                    };
-                }
-                if let Some(a) = meta.get("color").and_then(Json::as_array) {
-                    for (i, channel) in color.iter_mut().enumerate() {
-                        if let Some(v) = a.get(i).and_then(Json::as_f64).filter(|v| v.is_finite()) {
-                            *channel = if v <= 1.0 { (v.clamp(0.0, 1.0) * 255.0).round() as u8 } else { v.clamp(0.0, 255.0).round() as u8 };
-                        }
-                    }
-                }
-            }
-            let separated = ae_match == "ADBE Transform Group"
-                && array(ir, "children")
-                    .iter()
-                    .find(|child| string(child, &["match_name"]) == Some("ADBE Position"))
-                    .and_then(|position| boolean(position, &["dimensions_separated"]))
-                    == Some(true);
-            for child in array(ir, "children") {
-                if ae_match == "ADBE Transform Group"
-                    && matches!(string(child, &["match_name"]), Some("ADBE Position_0" | "ADBE Position_1" | "ADBE Position_2"))
-                    && !separated
-                {
-                    continue;
-                }
-                import_property(project, group, child, depth + 1, size, fps, poi_anchor, layer_time, losses, context);
-            }
-        }
-    } else if kind == "property" {
-        // py-aep exposes placeholder 10px Dash/Gap slots even for solid strokes. Only
-        // authored slots belong to the stroke; importing placeholders makes it dashed.
-        if parent.match_id == "dashes"
-            && boolean(ir, &["authored"]) == Some(false)
-            && array(ir, "keyframes").is_empty()
-            && string(ir, &["expression"]).unwrap_or("").is_empty()
-        {
-            return;
-        }
-        let value_json = ir.get("value").unwrap_or(&Json::Null);
-        let value_type = string(ir, &["value_type"]).unwrap_or("");
-        if value_json.is_null() && array(ir, "keyframes").is_empty() {
-            return;
-        }
-        let Some(value) = convert_value(value_json, value_type) else {
-            losses.push(format!("{context}: unsupported property {ae_match} ({value_type})"));
-            return;
-        };
-        // Built-in groups already have target properties; other groups keep duplicate AE siblings.
-        let native_group = matches!(
-            parent.match_id.as_str(),
-            "transform"
-                | "text"
-                | "pathOptions"
-                | "mask"
-                | "audio"
-                | "materialOptions"
-                | "cameraOptions"
-                | "lightOptions"
-                | "geometryOptions"
-                | "rangeSelector"
-                | "advanced"
-                | "properties"
-        );
-        let existing = native_group.then(|| parent.children.iter().position(|n| n.match_id() == match_id && matches!(n, Node::Prop(_)))).flatten();
-        let at = if let Some(at) = existing {
-            at
-        } else {
-            let template = if shapes::is_popup(parent.match_id.as_str(), match_id) {
-                Value::Enum(0)
-            } else {
-                text_anim::template(parent.match_id.as_str(), match_id).unwrap_or_else(|| value.clone())
-            };
-            parent.children.push(Node::Prop(Property::new(project.alloc(), match_id, name, template)));
-            parent.children.len() - 1
-        };
-        if let Some(Node::Prop(prop)) = parent.children.get_mut(at) {
-            let scale = if parent.match_id == "cameraOptions" && match_id == "highlightThreshold" { 255.0 } else { 1.0 };
-            if matches!(prop.value, Value::Vec2(_) | Value::Vec3(_)) && matches!(match_id, "position" | "anchor") {
-                prop.spatial = true;
-            }
-            // Casts / Accepts Shadows and the text Path (0 None, k = mask k) are zero-based in
-            // AE where the generic popup adapter subtracts one.
-            if (parent.match_id == "materialOptions" && matches!(match_id, "castsShadows" | "acceptsShadows"))
-                || (parent.match_id == "pathOptions" && match_id == "path")
-            {
-                let f = |v: f64| v + 1.0;
-                let value = if let Value::Scalar(v) = value { Value::Scalar(f(v)) } else { value };
-                fill_property_mapped(prop, ir, value, value_type, scale, Some(&f), layer_time, losses, context);
-            } else if match_id == "direction" && matches!(parent.match_id.as_str(), "path" | "rect" | "ellipse" | "star") {
-                // Path Direction is 1 Default / 3 Reversed in AE (2 is normal too); ours is 0 / 1
-                // after the popup adapter's minus one.
-                let f = |v: f64| if v >= 2.5 { 2.0 } else { 1.0 };
-                let value = if let Value::Scalar(v) = value { Value::Scalar(f(v)) } else { value };
-                fill_property_mapped(prop, ir, value, value_type, scale, Some(&f), layer_time, losses, context);
-            } else {
-                fill_property(prop, ir, value, value_type, scale, layer_time, losses, context);
-            }
-            if match_id == "sourceText" {
-                prop.ui = ParamUi::Text;
-            }
-            if matches!(prop.value, Value::Path(_)) {
-                prop.ui = ParamUi::Path;
-            }
-        }
+    }
+}
+
+/// An AE effect with a native counterpart, as an instance of that native effect.
+fn import_native_effect(
+    project: &mut Project,
+    spec: &effectcraft_effects::EffectSpec,
+    node: PropNode,
+    scope: PropScope,
+    losses: &mut Vec<String>,
+    context: &str,
+) -> PropGroup {
+    let ir = node.ir;
+    let mut group = effectcraft_effects::instantiate(spec, &mut build::Ids(&mut project.next_id), node.name, scope.size);
+    group.enabled = boolean(ir, &["enabled"]).unwrap_or(true);
+    if matches!(spec.id, "ec.perspective.shadowstudio2" | "ec.perspective.shadowstudio3") {
+        losses.push(format!("{context}: Shadow Studio native directional rendering is approximate; visual parity unverified"));
+    }
+    if spec.id == effectcraft_effects::puppet::ID {
+        puppet::import(project, &mut group, ir, scope.layer_time, losses, context);
+    } else if spec.id == effectcraft_effects::roto::ID {
+        roto::import(project, &mut group, ir, scope, losses, context);
     } else {
-        losses.push(format!("{context}: unknown property node {name}"));
+        if spec.id == "ec.color.curves" {
+            import_curves_state(&mut group, ir, losses, context);
+        }
+        let effect = EffectSource { ir, id: spec.id, layer_time: scope.layer_time };
+        import_native_effect_params(project, &mut group, ir, effect, losses, context, node.depth + 1);
+        if spec.id == "ec.color.colorama" {
+            import_colorama_cycle(&mut group, ir, losses, context);
+        }
+        if spec.id == "S_CartoonPaint" {
+            losses.push(format!("{context}: S_CartoonPaint brush-stroke rendering is approximate; visual parity unverified"));
+        }
+    }
+    if spec.id == "ec.perspective.ccsphere"
+        && group.prop("metal").is_some_and(|metal| {
+            metal.value.as_f64() != 0.0
+                || metal.keys.iter().any(|key| key.value.as_f64() != 0.0)
+                || metal.expr.as_ref().is_some_and(|expression| expression.enabled)
+        })
+    {
+        losses.push(format!("{context}: CC Sphere metal specular approximation; AE parity unverified"));
+    }
+    group
+}
+
+/// The index in `parent` of the group this node fills: an existing native group, or a new one.
+fn group_slot(project: &mut Project, parent: &mut PropGroup, node: PropNode, losses: &mut Vec<String>, context: &str) -> usize {
+    let PropNode { ae_match, match_id, name, .. } = node;
+    let indexed = matches!(parent.match_id.as_str(), "contents" | "effects" | "masks" | "animators" | "selectors") || matches!(parent.kind, GroupKind::Indexed);
+    let existing = if indexed { None } else { parent.children.iter().position(|n| n.match_id() == match_id && matches!(n, Node::Group(_))) };
+    if let Some(at) = existing {
+        return at;
+    }
+    let mut group = if parent.match_id == "masks" && match_id == "mask" {
+        let index = parent.children.len();
+        build::mask(
+            &mut build::Ids(&mut project.next_id),
+            name,
+            ShapePath::default(),
+            effectcraft_project::MaskMode::Add,
+            build::MASK_COLORS[index % build::MASK_COLORS.len()],
+        )
+    } else {
+        PropGroup::new(project.alloc(), match_id, name)
+    };
+    if matches!(match_id, "animator" | "rangeSelector") {
+        group.kind = GroupKind::Indexed;
+    }
+    if parent.match_id == "effects" {
+        if !effects::control_only(ae_match) {
+            losses.push(format!("{context}: effect {ae_match} has no native renderer"));
+        }
+    } else if parent.match_id == "contents" {
+        group.kind = GroupKind::Indexed;
+    }
+    parent.children.push(Node::Group(group));
+    parent.children.len() - 1
+}
+
+/// A mask's mode, flags, motion blur, feather falloff and colour from AE's mask metadata.
+fn apply_mask_metadata(kind: &mut GroupKind, meta: &Json, losses: &mut Vec<String>, context: &str) {
+    let GroupKind::Mask { mode, inverted, color, locked, motion_blur, feather_falloff, roto_bezier } = kind else { return };
+    if let Some(raw) = integer(meta, &["mask_mode"]) {
+        *mode = match raw {
+            6812 => effectcraft_project::MaskMode::None,
+            6813 => effectcraft_project::MaskMode::Add,
+            6814 => effectcraft_project::MaskMode::Subtract,
+            6815 => effectcraft_project::MaskMode::Intersect,
+            6816 => effectcraft_project::MaskMode::Lighten,
+            6817 => effectcraft_project::MaskMode::Darken,
+            6818 => effectcraft_project::MaskMode::Difference,
+            _ => {
+                losses.push(format!("{context}: unknown mask mode {raw}"));
+                effectcraft_project::MaskMode::Add
+            }
+        };
+    }
+    if let Some(v) = boolean(meta, &["inverted"]) {
+        *inverted = v;
+    }
+    if let Some(v) = boolean(meta, &["locked"]) {
+        *locked = v;
+    }
+    if let Some(v) = boolean(meta, &["roto_bezier"]) {
+        *roto_bezier = v;
+    }
+    if let Some(v) = integer(meta, &["mask_motion_blur"]) {
+        *motion_blur = match v {
+            7012 => effectcraft_project::MaskMotionBlur::SameAsLayer,
+            7013 => effectcraft_project::MaskMotionBlur::On,
+            7014 => effectcraft_project::MaskMotionBlur::Off,
+            _ => {
+                losses.push(format!("{context}: unknown mask motion blur {v}"));
+                effectcraft_project::MaskMotionBlur::SameAsLayer
+            }
+        };
+    }
+    if let Some(v) = integer(meta, &["mask_feather_falloff"]) {
+        *feather_falloff = match v {
+            7212 => effectcraft_project::FeatherFalloff::Smooth,
+            7213 => effectcraft_project::FeatherFalloff::Linear,
+            _ => {
+                losses.push(format!("{context}: unknown mask feather falloff {v}"));
+                effectcraft_project::FeatherFalloff::Smooth
+            }
+        };
+    }
+    if let Some(a) = meta.get("color").and_then(Json::as_array) {
+        for (i, channel) in color.iter_mut().enumerate() {
+            if let Some(v) = a.get(i).and_then(Json::as_f64).filter(|v| v.is_finite()) {
+                *channel = if v <= 1.0 { (v.clamp(0.0, 1.0) * 255.0).round() as u8 } else { v.clamp(0.0, 255.0).round() as u8 };
+            }
+        }
+    }
+}
+
+fn import_value_property(project: &mut Project, parent: &mut PropGroup, node: PropNode, layer_time: LayerTime, losses: &mut Vec<String>, context: &str) {
+    let PropNode { ir, ae_match, match_id, name, .. } = node;
+    // py-aep exposes placeholder 10px Dash/Gap slots even for solid strokes. Only
+    // authored slots belong to the stroke; importing placeholders makes it dashed.
+    if parent.match_id == "dashes"
+        && boolean(ir, &["authored"]) == Some(false)
+        && array(ir, "keyframes").is_empty()
+        && string(ir, &["expression"]).unwrap_or("").is_empty()
+    {
+        return;
+    }
+    let value_json = ir.get("value").unwrap_or(&Json::Null);
+    let value_type = string(ir, &["value_type"]).unwrap_or("");
+    if value_json.is_null() && array(ir, "keyframes").is_empty() {
+        return;
+    }
+    let Some(value) = convert_value(value_json, value_type) else {
+        losses.push(format!("{context}: unsupported property {ae_match} ({value_type})"));
+        return;
+    };
+    // Built-in groups already have target properties; other groups keep duplicate AE siblings.
+    let native_group = matches!(
+        parent.match_id.as_str(),
+        "transform"
+            | "text"
+            | "pathOptions"
+            | "mask"
+            | "audio"
+            | "materialOptions"
+            | "cameraOptions"
+            | "lightOptions"
+            | "geometryOptions"
+            | "rangeSelector"
+            | "advanced"
+            | "properties"
+    );
+    let existing = native_group.then(|| parent.children.iter().position(|n| n.match_id() == match_id && matches!(n, Node::Prop(_)))).flatten();
+    let at = if let Some(at) = existing {
+        at
+    } else {
+        let template = if shapes::is_popup(parent.match_id.as_str(), match_id) {
+            Value::Enum(0)
+        } else {
+            text_anim::template(parent.match_id.as_str(), match_id).unwrap_or_else(|| value.clone())
+        };
+        parent.children.push(Node::Prop(Property::new(project.alloc(), match_id, name, template)));
+        parent.children.len() - 1
+    };
+    if let Some(Node::Prop(prop)) = parent.children.get_mut(at) {
+        fill_native_property(prop, parent.match_id.as_str(), node, value, layer_time, losses, context);
+    }
+}
+
+/// Fills a native property from its AE node, adapting the few streams whose numbering differs.
+fn fill_native_property(prop: &mut Property, parent_match: &str, node: PropNode, value: Value, layer_time: LayerTime, losses: &mut Vec<String>, context: &str) {
+    let PropNode { ir, match_id, .. } = node;
+    let value_type = string(ir, &["value_type"]).unwrap_or("");
+    let scale = if parent_match == "cameraOptions" && match_id == "highlightThreshold" { 255.0 } else { 1.0 };
+    if matches!(prop.value, Value::Vec2(_) | Value::Vec3(_)) && matches!(match_id, "position" | "anchor") {
+        prop.spatial = true;
+    }
+    // Casts / Accepts Shadows and the text Path (0 None, k = mask k) are zero-based in
+    // AE where the generic popup adapter subtracts one.
+    if (parent_match == "materialOptions" && matches!(match_id, "castsShadows" | "acceptsShadows")) || (parent_match == "pathOptions" && match_id == "path") {
+        let f = |v: f64| v + 1.0;
+        let value = if let Value::Scalar(v) = value { Value::Scalar(f(v)) } else { value };
+        fill_property(prop, ir, value, Fill::scaled(value_type, scale).mapped(&f), layer_time, losses, context);
+    } else if match_id == "direction" && matches!(parent_match, "path" | "rect" | "ellipse" | "star") {
+        // Path Direction is 1 Default / 3 Reversed in AE (2 is normal too); ours is 0 / 1
+        // after the popup adapter's minus one.
+        let f = |v: f64| if v >= 2.5 { 2.0 } else { 1.0 };
+        let value = if let Value::Scalar(v) = value { Value::Scalar(f(v)) } else { value };
+        fill_property(prop, ir, value, Fill::scaled(value_type, scale).mapped(&f), layer_time, losses, context);
+    } else {
+        fill_property(prop, ir, value, Fill::scaled(value_type, scale), layer_time, losses, context);
+    }
+    if match_id == "sourceText" {
+        prop.ui = ParamUi::Text;
+    }
+    if matches!(prop.value, Value::Path(_)) {
+        prop.ui = ParamUi::Path;
     }
 }
 
@@ -1530,24 +1672,32 @@ fn import_curves_state(group: &mut PropGroup, ir: &Json, losses: &mut Vec<String
     }
 }
 
+/// The native effect whose parameters are being imported: its AE IR, its native id, and its
+/// layer's clock.
+#[derive(Clone, Copy)]
+struct EffectSource<'a> {
+    ir: &'a Json,
+    id: &'a str,
+    layer_time: LayerTime,
+}
+
 fn import_native_effect_params(
     project: &mut Project,
     group: &mut PropGroup,
     ir: &Json,
-    effect_ir: &Json,
-    effect_id: &str,
-    layer_time: LayerTime,
+    effect: EffectSource,
     losses: &mut Vec<String>,
     context: &str,
     depth: usize,
 ) {
+    let EffectSource { ir: effect_ir, id: effect_id, layer_time } = effect;
     if depth >= 64 {
         losses.push(format!("{context}: effect property depth exceeds 64"));
         return;
     }
     for child in array(ir, "children") {
         if string(child, &["kind"]) == Some("group") {
-            import_native_effect_params(project, group, child, effect_ir, effect_id, layer_time, losses, context, depth + 1);
+            import_native_effect_params(project, group, child, effect, losses, context, depth + 1);
             continue;
         }
         let Some(raw) = string(child, &["match_name"]) else { continue };
@@ -1588,7 +1738,7 @@ fn import_native_effect_params(
             }
             if let Some(value) = convert_value(value_json, string(child, &["value_type"]).unwrap_or("")) {
                 let mut prop = Property::new(project.alloc(), raw, string(child, &["name"]).unwrap_or(raw), value.clone());
-                fill_property(&mut prop, child, value, string(child, &["value_type"]).unwrap_or(""), 1.0, layer_time, losses, context);
+                fill_property(&mut prop, child, value, Fill::plain(string(child, &["value_type"]).unwrap_or("")), layer_time, losses, context);
                 group.children.push(Node::Prop(prop));
             }
             continue;
@@ -1653,9 +1803,9 @@ fn import_native_effect_params(
         };
         if let Some(f) = remap {
             let adjusted_value = if let Value::Scalar(v) = value { Value::Scalar(f(v)) } else { value };
-            fill_property_mapped(prop, child, adjusted_value, value_type, scale, Some(&f), layer_time, losses, context);
+            fill_property(prop, child, adjusted_value, Fill::scaled(value_type, scale).mapped(&f), layer_time, losses, context);
         } else {
-            fill_property(prop, child, value, value_type, scale, layer_time, losses, context);
+            fill_property(prop, child, value, Fill::scaled(value_type, scale), layer_time, losses, context);
         }
     }
 }
@@ -1679,23 +1829,32 @@ fn remap_json<'a>(j: &'a Json, f: Option<&dyn Fn(f64) -> f64>) -> Cow<'a, Json> 
     }
 }
 
-fn fill_property(prop: &mut Property, ir: &Json, value: Value, value_type: &str, scale: f64, layer_time: LayerTime, losses: &mut Vec<String>, context: &str) {
-    fill_property_mapped(prop, ir, value, value_type, scale, None, layer_time, losses, context);
+/// How [`fill_property`] reads an AE stream's values: their IR value type, the factor to the
+/// native unit, and an optional `remap` of keyframe values as they are read (the static
+/// value is passed already mapped), so a remapped property's IR is never copied.
+#[derive(Clone, Copy)]
+struct Fill<'a> {
+    value_type: &'a str,
+    scale: f64,
+    remap: Option<&'a dyn Fn(f64) -> f64>,
 }
 
-/// [`fill_property`] with keyframe values mapped by `remap` as they are read (`value` is
-/// already mapped), so a remapped property's IR is never copied.
-fn fill_property_mapped(
-    prop: &mut Property,
-    ir: &Json,
-    value: Value,
-    value_type: &str,
-    scale: f64,
-    remap: Option<&dyn Fn(f64) -> f64>,
-    layer_time: LayerTime,
-    losses: &mut Vec<String>,
-    context: &str,
-) {
+impl<'a> Fill<'a> {
+    fn plain(value_type: &'a str) -> Self {
+        Self::scaled(value_type, 1.0)
+    }
+
+    fn scaled(value_type: &'a str, scale: f64) -> Self {
+        Self { value_type, scale, remap: None }
+    }
+
+    fn mapped(self, remap: &'a dyn Fn(f64) -> f64) -> Self {
+        Self { remap: Some(remap), ..self }
+    }
+}
+
+fn fill_property(prop: &mut Property, ir: &Json, value: Value, fill: Fill, layer_time: LayerTime, losses: &mut Vec<String>, context: &str) {
+    let Fill { value_type, scale, remap } = fill;
     let raw = string(ir, &["match_name"]).unwrap_or("?");
     let native_template = prop.value.clone();
     prop.value = adapt_value(scale_value(value, scale), &native_template);
@@ -2095,8 +2254,8 @@ mod tests {
                 let clock = LayerTime { start: Tick::ZERO, stretch };
                 let (mut copied, mut mapped) = (Property::new(1, "p", "P", template.clone()), Property::new(1, "p", "P", template));
                 let (mut copied_losses, mut mapped_losses) = (Vec::new(), Vec::new());
-                fill_property(&mut copied, &remapped(&ir, f), Value::Scalar(f(1.0)), "", 1.0, clock, &mut copied_losses, "t");
-                fill_property_mapped(&mut mapped, &ir, Value::Scalar(f(1.0)), "", 1.0, Some(&f), clock, &mut mapped_losses, "t");
+                fill_property(&mut copied, &remapped(&ir, f), Value::Scalar(f(1.0)), Fill::plain(""), clock, &mut copied_losses, "t");
+                fill_property(&mut mapped, &ir, Value::Scalar(f(1.0)), Fill::plain("").mapped(&f), clock, &mut mapped_losses, "t");
                 assert_eq!(copied, mapped);
                 assert_eq!(copied_losses, mapped_losses);
             }
@@ -2130,7 +2289,7 @@ mod tests {
             let clock = LayerTime { start: tick(start), stretch };
             let mut prop = Property::new(1, "opacity", "Opacity", Value::Scalar(0.0));
             let mut losses = Vec::new();
-            fill_property(&mut prop, &ir, Value::Scalar(0.0), "", 1.0, clock, &mut losses, "test");
+            fill_property(&mut prop, &ir, Value::Scalar(0.0), Fill::plain(""), clock, &mut losses, "test");
             assert!(losses.is_empty());
             assert_eq!(prop.keys.len(), 2);
             assert_eq!(prop.keys.iter().map(|k| k.time).collect::<Vec<_>>(), {
@@ -2157,8 +2316,8 @@ mod tests {
         let mut losses = Vec::new();
         let normal_clock = LayerTime { start: Tick::ZERO, stretch: 100.0 };
         let reverse_clock = LayerTime { start: tick(4.0), stretch: -100.0 };
-        fill_property(&mut baseline, &ir, Value::Scalar(0.0), "", 1.0, normal_clock, &mut losses, "test");
-        fill_property(&mut reversed, &ir, Value::Scalar(0.0), "", 1.0, reverse_clock, &mut losses, "test");
+        fill_property(&mut baseline, &ir, Value::Scalar(0.0), Fill::plain(""), normal_clock, &mut losses, "test");
+        fill_property(&mut reversed, &ir, Value::Scalar(0.0), Fill::plain(""), reverse_clock, &mut losses, "test");
         assert!(losses.is_empty());
         for comp_time in [1.0, 1.25, 1.5, 2.0, 2.75, 3.0] {
             let a = effectcraft_keyframe::evaluate(&baseline.keys, normal_clock.at(comp_time), false).and_then(|v| match v {
@@ -2206,7 +2365,7 @@ mod tests {
         let clock = LayerTime { start: Tick::ZERO, stretch: 100.0 };
         let mut prop = Property::new(1, "takeMatteFromLayer", "Matte Layer", Value::Layer(None));
         let mut losses = Vec::new();
-        fill_property(&mut prop, &ir, Value::Scalar(2.0), "", 1.0, clock, &mut losses, "test");
+        fill_property(&mut prop, &ir, Value::Scalar(2.0), Fill::plain(""), clock, &mut losses, "test");
         assert_eq!(prop.value, Value::Layer(Some(2)));
         resolve_layer_refs(&mut prop, &BTreeMap::from([(2, Some(789))]), &mut losses, "test");
         assert_eq!(prop.value, Value::Layer(Some(789)));
@@ -2256,7 +2415,15 @@ mod tests {
             {"kind":"property","match_name":"CS Vignette-0003","authored":false,"value":[54000.0, 96000.0]}
         ]});
         let mut losses = Vec::new();
-        import_native_effect_params(&mut project, &mut effect, &ir, &ir, spec.id, LayerTime { start: Tick::ZERO, stretch: 100.0 }, &mut losses, "test", 0);
+        import_native_effect_params(
+            &mut project,
+            &mut effect,
+            &ir,
+            EffectSource { ir: &ir, id: spec.id, layer_time: LayerTime { start: Tick::ZERO, stretch: 100.0 } },
+            &mut losses,
+            "test",
+            0,
+        );
         assert_eq!(effect.prop("center").unwrap().value, Value::Vec2([540.0, 960.0]));
         assert_eq!(effect.prop("amount").unwrap().value, Value::Scalar(39.0));
     }
@@ -2271,7 +2438,15 @@ mod tests {
              "keyframes":[{"time":0.0,"value":0.2},{"time":1.0,"value":1.0}]}
         ]});
         let mut losses = Vec::new();
-        import_native_effect_params(&mut project, &mut effect, &ir, &ir, spec.id, LayerTime { start: Tick::ZERO, stretch: 100.0 }, &mut losses, "test", 0);
+        import_native_effect_params(
+            &mut project,
+            &mut effect,
+            &ir,
+            EffectSource { ir: &ir, id: spec.id, layer_time: LayerTime { start: Tick::ZERO, stretch: 100.0 } },
+            &mut losses,
+            "test",
+            0,
+        );
         let opacity = effect.get("opacity").unwrap();
         assert_eq!(opacity.value, Value::Scalar(50.0));
         assert_eq!(opacity.keys.iter().map(|k| k.value.clone()).collect::<Vec<_>>(), vec![Value::Scalar(20.0), Value::Scalar(100.0)]);
@@ -2294,7 +2469,15 @@ mod tests {
              "keyframes":[{"time":0.0,"value":100.0},{"time":1.0,"value":75.0}]}
         ]});
         let mut losses = Vec::new();
-        import_native_effect_params(&mut project, &mut effect, &ir, &ir, spec.id, LayerTime { start: Tick::ZERO, stretch: 100.0 }, &mut losses, "test", 0);
+        import_native_effect_params(
+            &mut project,
+            &mut effect,
+            &ir,
+            EffectSource { ir: &ir, id: spec.id, layer_time: LayerTime { start: Tick::ZERO, stretch: 100.0 } },
+            &mut losses,
+            "test",
+            0,
+        );
         let v = |path: &str| effect.prop(path).unwrap().value.clone();
         assert_eq!(v("sourceCrops/cropLeft"), Value::Scalar(0.0));
         assert_eq!(v("sourceCrops/cropRight"), Value::Scalar(0.0));
@@ -2318,7 +2501,15 @@ mod tests {
             {"kind":"property","match_name":"ADBE Scribble Fill-0060","value":3.4}
         ]});
         let mut losses = Vec::new();
-        import_native_effect_params(&mut project, &mut effect, &ir, &ir, spec.id, LayerTime { start: Tick::ZERO, stretch: 100.0 }, &mut losses, "test", 0);
+        import_native_effect_params(
+            &mut project,
+            &mut effect,
+            &ir,
+            EffectSource { ir: &ir, id: spec.id, layer_time: LayerTime { start: Tick::ZERO, stretch: 100.0 } },
+            &mut losses,
+            "test",
+            0,
+        );
         let f = |path: &str| effect.prop(path).unwrap().value.as_f64();
         assert!((f("opacity") - 100.0).abs() < 1e-9);
         assert!((f("strokeOptions/curviness") - 20.0).abs() < 1e-9);
@@ -2337,7 +2528,15 @@ mod tests {
             {"kind":"property","match_name":"ADBE Glo2-0011","value":0.5}
         ]});
         let mut losses = Vec::new();
-        import_native_effect_params(&mut project, &mut effect, &ir, &ir, spec.id, LayerTime { start: Tick::ZERO, stretch: 100.0 }, &mut losses, "test", 0);
+        import_native_effect_params(
+            &mut project,
+            &mut effect,
+            &ir,
+            EffectSource { ir: &ir, id: spec.id, layer_time: LayerTime { start: Tick::ZERO, stretch: 100.0 } },
+            &mut losses,
+            "test",
+            0,
+        );
         let f = |path: &str| effect.prop(path).unwrap().value.as_f64();
         assert!((f("threshold") - 60.0).abs() < 1e-9);
         assert!((f("abMidpoint") - 50.0).abs() < 1e-9);
@@ -2721,7 +2920,15 @@ mod tests {
         let mut effect = effectcraft_effects::instantiate(spec, &mut build::Ids(&mut project.next_id), "Drop Shadow", [100.0, 100.0]);
         let mut losses = Vec::new();
         let ir = serde_json::json!({"children":[{"kind":"property","match_name":"ADBE Drop Shadow-9999","value_type":6412,"value":0,"expression":"","keyframes":[]}]});
-        import_native_effect_params(&mut project, &mut effect, &ir, &ir, spec.id, LayerTime { start: Tick::ZERO, stretch: 100.0 }, &mut losses, "test", 0);
+        import_native_effect_params(
+            &mut project,
+            &mut effect,
+            &ir,
+            EffectSource { ir: &ir, id: spec.id, layer_time: LayerTime { start: Tick::ZERO, stretch: 100.0 } },
+            &mut losses,
+            "test",
+            0,
+        );
         assert!(losses.is_empty());
         assert!(effect.get("ADBE Drop Shadow-9999").is_none());
         let changed = serde_json::json!({"children":[{"kind":"property","match_name":"ADBE Drop Shadow-9999","value_type":6412,"value":1,"expression":"","keyframes":[]}]});
@@ -2729,9 +2936,7 @@ mod tests {
             &mut project,
             &mut effect,
             &changed,
-            &changed,
-            spec.id,
-            LayerTime { start: Tick::ZERO, stretch: 100.0 },
+            EffectSource { ir: &changed, id: spec.id, layer_time: LayerTime { start: Tick::ZERO, stretch: 100.0 } },
             &mut losses,
             "test",
             0,

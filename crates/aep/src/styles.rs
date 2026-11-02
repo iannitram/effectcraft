@@ -4,7 +4,7 @@ use effectcraft_keyframe::Value;
 use effectcraft_project::{Layer, Node, Project, PropGroup, build, styles};
 use serde_json::Value as Json;
 
-use super::{LayerTime, array, boolean, convert_value, fill_property, number, string};
+use super::{Fill, LayerTime, array, boolean, convert_value, fill_property, number, string};
 
 fn style_id(raw: &str) -> Option<&'static str> {
     Some(match raw {
@@ -171,7 +171,7 @@ fn fill_group(group: &mut PropGroup, ir: &Json, style: &str, layer_time: LayerTi
             }
             continue;
         };
-        fill_property(prop, child, value, value_type, 1.0, layer_time, losses, context);
+        fill_property(prop, child, value, Fill::plain(value_type), layer_time, losses, context);
         if style == "innerGlow" && id == "source" {
             if number(child, &["value"]).is_some_and(|raw| raw != 1.0 && raw != 2.0) {
                 losses.push(format!("{context}: unsupported Inner Glow source value"));

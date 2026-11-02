@@ -226,6 +226,31 @@ pub enum Composer {
 fn single_line() -> Composer {
     Composer::SingleLine
 }
+
+/// How the corners of a text stroke are drawn (Character panel Line Join).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum LineJoin {
+    /// Sharp corners (AE's default for new text).
+    #[default]
+    Miter,
+    Round,
+    Bevel,
+}
+
+impl LineJoin {
+    pub fn parse(s: &str) -> Option<LineJoin> {
+        Some(match s.to_ascii_lowercase().as_str() {
+            "miter" => LineJoin::Miter,
+            "round" => LineJoin::Round,
+            "bevel" => LineJoin::Bevel,
+            _ => return None,
+        })
+    }
+}
+
+fn round_join() -> LineJoin {
+    LineJoin::Round
+}
 fn yes() -> bool {
     true
 }
@@ -468,6 +493,9 @@ pub struct TextDoc {
     pub stroke_over_fill: bool,
     #[serde(skip_serializing_if = "DigitSet::is_default")]
     pub digit_set: DigitSet,
+    /// Documents saved before line joins existed drew round joins.
+    #[serde(default = "round_join")]
+    pub line_join: LineJoin,
     pub tracking: f64,
     /// None = auto (120% of size).
     pub leading: Option<f64>,
@@ -535,6 +563,7 @@ impl Default for TextDoc {
             apply_stroke: false,
             stroke_over_fill: true,
             digit_set: DigitSet::Default,
+            line_join: LineJoin::Miter,
             tracking: 0.0,
             leading: None,
             justify: Justify::Left,
@@ -992,6 +1021,10 @@ impl TextDoc {
             }
             "digitSet" => {
                 self.digit_set = DigitSet::parse(v).ok_or("digitSet: expected default|arabic|hindi")?;
+                return Ok(true);
+            }
+            "lineJoin" => {
+                self.line_join = v.as_str().and_then(LineJoin::parse).ok_or("lineJoin: expected miter|round|bevel")?;
                 return Ok(true);
             }
             "vertical" => {
@@ -1563,6 +1596,8 @@ mod tests {
         assert!(d.is_uniform());
         assert_eq!(d.style_at(2).size, 50.0);
         assert_eq!(d.composer, Composer::SingleLine, "old box text keeps greedy breaking");
+        assert_eq!(d.line_join, LineJoin::Round, "old strokes keep their round corners");
+        assert_eq!(TextDoc::default().line_join, LineJoin::Miter);
         assert!(d.ligatures);
         assert_eq!(d.kerning, Kerning::Metrics);
         // Round trip with runs.

@@ -1313,56 +1313,60 @@ mod tests {
     #[test]
     fn reviewed_match_ids_and_diagnostics() {
         assert_eq!(effect_id("PEDG"), Some("ec.stylize.deepglow"));
-        assert_eq!(param_id("ec.stylize.deepglow", "PEDG-0001"), Some("PEDG-0001"));
-        assert_eq!(param_id("ec.stylize.deepglow", "PEDG-0019"), Some("PEDG-0019"));
-        assert_eq!(param_id("ec.stylize.deepglow", "PEDG-0055"), Some("PEDG-0055"));
-        assert_eq!(param_id("ec.stylize.deepglow", "PEDG-0084"), Some("PEDG-0084"));
-        assert_eq!(param_id("ec.stylize.deepglow", "PEDG-0039"), Some("PEDG-0039"));
-        assert_eq!(param_id("ec.stylize.deepglow", "PEDG-0057"), Some("PEDG-0057"));
-        assert_eq!(param_id("ec.stylize.deepglow", "PEDG-0059"), Some("PEDG-0059"));
-        assert_eq!(param_id("ec.stylize.deepglow", "PEDG-0056"), Some("PEDG-0056"));
+        for (effect, raw, native) in [
+            ("ec.stylize.deepglow", "PEDG-0001", Some("PEDG-0001")),
+            ("ec.stylize.deepglow", "PEDG-0019", Some("PEDG-0019")),
+            ("ec.stylize.deepglow", "PEDG-0055", Some("PEDG-0055")),
+            ("ec.stylize.deepglow", "PEDG-0084", Some("PEDG-0084")),
+            ("ec.stylize.deepglow", "PEDG-0039", Some("PEDG-0039")),
+            ("ec.stylize.deepglow", "PEDG-0057", Some("PEDG-0057")),
+            ("ec.stylize.deepglow", "PEDG-0059", Some("PEDG-0059")),
+            ("ec.stylize.deepglow", "PEDG-0056", Some("PEDG-0056")),
+            ("ec.perspective.shadowstudio2", "PESS2-0022", Some("PESS2-0022")),
+            ("ec.perspective.shadowstudio2", "PESS2-0028", Some("PESS2-0028")),
+            ("ec.perspective.shadowstudio3", "PESS3-0027", Some("PESS3-0027")),
+            ("ec.perspective.shadowstudio3", "PESS3-0078", Some("PESS3-0078")),
+            ("ec.perspective.cccylinder", "CC Cylinder-0010", Some("rotationY")),
+            ("ec.sim.ccballaction", "CC Ball Action-0008", Some("instabilityState")),
+            ("ec.distort.ccpageturn", "CC Page Turn-0008", Some("controls")),
+            ("ec.noise.noise", "ADBE Noise2-0002", Some("color")),
+            ("ec.color.lumetri", "ADBE Lumetri-0005", Some("basicCorrection/inputLut")),
+            ("ec.color.lumetri", "ADBE Lumetri-0003", Some("basicCorrection/active")),
+            ("ec.color.lumetri", "ADBE Lumetri-0063", Some("basicCorrection/tone/hdrWhite")),
+            ("ec.color.lumetri", "ADBE Lumetri-0105", Some("curves/hueSaturationCurves/hueVsHueActive")),
+            ("ec.color.lumetri", "ADBE Lumetri-0118", Some("curves/rgbCurves/active")),
+            ("ec.color.lumetri", "ADBE Lumetri-0025", Some("creative/look")),
+            ("ec.color.lumetri", "ADBE Lumetri-0026", Some("creative/lookIntensity")),
+            ("ec.color.lumetri", "ADBE Lumetri-0089", Some("hslSecondary/correction/sharpen")),
+            ("ec.distort.turbulentdisplace", "ADBE Turbulent Displace-0010", Some("evolutionOptions/randomSeed")),
+            ("ec.keying.keylight", "Keylight 906-0043", Some("foregroundColourCorrection/suppressionAmount")),
+            ("ec.keying.keylight", "Keylight 906-0062", Some("edgeColourCorrection/edgeSuppressionAmount")),
+            ("ec.keying.keylight", "Keylight 906-0023", Some("insideMask/insideMask")),
+            ("ec.keying.keylight", "Keylight 906-0031", Some("outsideMask/outsideMask")),
+            ("ec.noise.addgrain", "VISINF Grain Implant-0044", Some("application/channelBalance/redShadows")),
+            ("ec.noise.addgrain", "VISINF Grain Implant-0052", Some("application/channelBalance/blueHighlights")),
+            ("ec.noise.addgrain", "VISINF Grain Implant-0053", Some("application/matchAmount")),
+            ("ec.noise.addgrain", "VISINF Grain Implant-0054", Some("application/matchingColor")),
+            ("ec.noise.addgrain", "VISINF Grain Implant-0055", Some("application/matchTolerance")),
+            ("ec.noise.addgrain", "VISINF Grain Implant-0056", Some("application/matchSoftness")),
+            ("ec.noise.addgrain", "VISINF Grain Implant-0058", Some("application/invertMatch")),
+            ("ec.noise.addgrain", "VISINF Grain Implant-0057", None),
+            ("ec.noise.addgrain", "VISINF Grain Implant-0059", None),
+            ("ec.noise.addgrain", "VISINF Grain Implant-0060", None),
+            ("S_Monochrome", "S_Monochrome-0001", Some("S_Monochrome-0001")),
+            ("S_Monochrome", "S_Monochrome-0235", Some("S_Monochrome-0235")),
+            ("S_CartoonPaint", "S_CartoonPaint-0540", Some("S_CartoonPaint-0540")),
+            ("S_CartoonPaint", "S_CartoonPaint-0542", Some("S_CartoonPaint-0542")),
+            ("S_CartoonPaint", "S_CartoonPaint-0541", None),
+            ("S_CartoonPaint", "S_CartoonPaint-0520", None),
+            ("ec.perspective.cccylinder", "CC Cylinder-0003", None),
+            ("ec.color.lumetri", "ADBE Lumetri-0084", None),
+        ] {
+            assert_eq!(param_id(effect, raw), native, "{effect} {raw}");
+        }
         for raw in ["PEDG-0009", "PEDG-0025", "PEDG-0031", "PEDG-0032", "PEDG-0033", "PEDG-0043"] {
             assert_eq!(param_id("ec.stylize.deepglow", raw), Some(raw));
         }
-        assert_eq!(param_id("ec.perspective.shadowstudio2", "PESS2-0022"), Some("PESS2-0022"));
-        assert_eq!(param_id("ec.perspective.shadowstudio2", "PESS2-0028"), Some("PESS2-0028"));
-        assert_eq!(param_id("ec.perspective.shadowstudio3", "PESS3-0027"), Some("PESS3-0027"));
-        assert_eq!(param_id("ec.perspective.shadowstudio3", "PESS3-0078"), Some("PESS3-0078"));
-        assert_eq!(param_id("ec.perspective.cccylinder", "CC Cylinder-0010"), Some("rotationY"));
-        assert_eq!(param_id("ec.sim.ccballaction", "CC Ball Action-0008"), Some("instabilityState"));
-        assert_eq!(param_id("ec.distort.ccpageturn", "CC Page Turn-0008"), Some("controls"));
-        assert_eq!(param_id("ec.noise.noise", "ADBE Noise2-0002"), Some("color"));
-        assert_eq!(param_id("ec.color.lumetri", "ADBE Lumetri-0005"), Some("basicCorrection/inputLut"));
-        assert_eq!(param_id("ec.color.lumetri", "ADBE Lumetri-0003"), Some("basicCorrection/active"));
-        assert_eq!(param_id("ec.color.lumetri", "ADBE Lumetri-0063"), Some("basicCorrection/tone/hdrWhite"));
-        assert_eq!(param_id("ec.color.lumetri", "ADBE Lumetri-0105"), Some("curves/hueSaturationCurves/hueVsHueActive"));
-        assert_eq!(param_id("ec.color.lumetri", "ADBE Lumetri-0118"), Some("curves/rgbCurves/active"));
-        assert_eq!(param_id("ec.color.lumetri", "ADBE Lumetri-0025"), Some("creative/look"));
-        assert_eq!(param_id("ec.color.lumetri", "ADBE Lumetri-0026"), Some("creative/lookIntensity"));
-        assert_eq!(param_id("ec.color.lumetri", "ADBE Lumetri-0089"), Some("hslSecondary/correction/sharpen"));
-        assert_eq!(param_id("ec.distort.turbulentdisplace", "ADBE Turbulent Displace-0010"), Some("evolutionOptions/randomSeed"));
-        assert_eq!(param_id("ec.keying.keylight", "Keylight 906-0043"), Some("foregroundColourCorrection/suppressionAmount"));
-        assert_eq!(param_id("ec.keying.keylight", "Keylight 906-0062"), Some("edgeColourCorrection/edgeSuppressionAmount"));
-        assert_eq!(param_id("ec.keying.keylight", "Keylight 906-0023"), Some("insideMask/insideMask"));
-        assert_eq!(param_id("ec.keying.keylight", "Keylight 906-0031"), Some("outsideMask/outsideMask"));
-        assert_eq!(param_id("ec.noise.addgrain", "VISINF Grain Implant-0044"), Some("application/channelBalance/redShadows"));
-        assert_eq!(param_id("ec.noise.addgrain", "VISINF Grain Implant-0052"), Some("application/channelBalance/blueHighlights"));
-        assert_eq!(param_id("ec.noise.addgrain", "VISINF Grain Implant-0053"), Some("application/matchAmount"));
-        assert_eq!(param_id("ec.noise.addgrain", "VISINF Grain Implant-0054"), Some("application/matchingColor"));
-        assert_eq!(param_id("ec.noise.addgrain", "VISINF Grain Implant-0055"), Some("application/matchTolerance"));
-        assert_eq!(param_id("ec.noise.addgrain", "VISINF Grain Implant-0056"), Some("application/matchSoftness"));
-        assert_eq!(param_id("ec.noise.addgrain", "VISINF Grain Implant-0058"), Some("application/invertMatch"));
-        assert_eq!(param_id("ec.noise.addgrain", "VISINF Grain Implant-0057"), None);
-        assert_eq!(param_id("ec.noise.addgrain", "VISINF Grain Implant-0059"), None);
-        assert_eq!(param_id("ec.noise.addgrain", "VISINF Grain Implant-0060"), None);
-        assert_eq!(param_id("S_Monochrome", "S_Monochrome-0001"), Some("S_Monochrome-0001"));
-        assert_eq!(param_id("S_Monochrome", "S_Monochrome-0235"), Some("S_Monochrome-0235"));
-        assert_eq!(param_id("S_CartoonPaint", "S_CartoonPaint-0540"), Some("S_CartoonPaint-0540"));
-        assert_eq!(param_id("S_CartoonPaint", "S_CartoonPaint-0542"), Some("S_CartoonPaint-0542"));
-        assert_eq!(param_id("S_CartoonPaint", "S_CartoonPaint-0541"), None);
-        assert_eq!(param_id("S_CartoonPaint", "S_CartoonPaint-0520"), None);
-        assert_eq!(param_id("ec.perspective.cccylinder", "CC Cylinder-0003"), None);
-        assert_eq!(param_id("ec.color.lumetri", "ADBE Lumetri-0084"), None);
         assert_eq!(effect_id("MB LookSuite3"), None);
         assert!(control_only("ADBE CM WigglePosition"));
         assert!(!control_only("MB LookSuite3"));

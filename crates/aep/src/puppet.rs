@@ -1,6 +1,6 @@
 //! AE FreePin3's nested meshes and pins into EffectCraft's editable Puppet tree.
 
-use super::*;
+use super::{Fill, Json, LayerTime, ParamUi, Project, PropGroup, Property, Value, array, boolean, build, convert_value, fill_property, number, string};
 use effectcraft_effects::puppet::{self, MeshGeometry, MeshOpts, PinKind};
 
 fn raw_state(project: &mut Project, group: &mut PropGroup, name: &str, ir: &Json, losses: &mut Vec<String>, context: &str) {
@@ -65,7 +65,7 @@ fn set(group: &mut PropGroup, name: &str, ir: &Json, layer_time: LayerTime, loss
         losses.push(format!("{context}: unsupported Puppet value {}", string(ir, &["match_name"]).unwrap_or("?")));
         return;
     };
-    fill_property(prop, ir, value, ty, 1.0, layer_time, losses, context);
+    fill_property(prop, ir, value, Fill::plain(ty), layer_time, losses, context);
 }
 
 fn import_pin(project: &mut Project, deform: &mut PropGroup, ir: &Json, layer_time: LayerTime, losses: &mut Vec<String>, context: &str) {
@@ -109,7 +109,7 @@ fn import_pin(project: &mut Project, deform: &mut PropGroup, ir: &Json, layer_ti
                 if let Some(value) = field.get("value").and_then(|v| convert_value(v, ty)) {
                     let mut prop = Property::new(project.alloc(), raw, string(field, &["name"]).unwrap_or(raw), value.clone());
                     prop.ui = ParamUi::Hidden;
-                    fill_property(&mut prop, field, value, ty, 1.0, layer_time, losses, context);
+                    fill_property(&mut prop, field, value, Fill::plain(ty), layer_time, losses, context);
                     pin.children.push(prop.into());
                 } else {
                     losses.push(format!("{context}: unsupported Basic Puppet pin value {raw}"));
@@ -222,6 +222,7 @@ pub(super) fn import(project: &mut Project, fx: &mut PropGroup, ir: &Json, layer
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tick;
 
     #[test]
     fn inert_builtin_compositing_options_are_not_losses() {

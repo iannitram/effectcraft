@@ -155,15 +155,6 @@ pub(crate) fn key(k: &RawKey, value: Value, scale: f64, spatial: bool) -> Keyfra
     kf
 }
 
-/// What an After Effects mask feather is multiplied by on its way in. EffectCraft blurs a
-/// mask's edge with a Gaussian whose sigma is half the feather; After Effects' edge is
-/// narrower for the same number. Measured on one mask only, a full-frame vignette (feather
-/// 546 px, three expansions) against its export at four times: the pictures agree best with
-/// the feather between 73% and 79% of its number, and differ three times as much at 100%.
-/// One mask is thin evidence: the import list names the scaling, and this constant is the
-/// only place to undo it.
-const MASK_FEATHER_SCALE: f64 = 0.76;
-
 /// Put a file property's value or keyframes on `prop`. `scale` converts the file's unit to
 /// ours (After Effects stores percentages as fractions).
 fn apply(prop: &mut Property, raw: &RawProp, scale: f64, conv: &dyn Fn(&[f64], f64) -> Option<Value>) -> bool {
@@ -548,14 +539,9 @@ fn masks(cx: &mut Ctx, ids: &mut Ids, raw: &[RawNode], g: &mut PropGroup, size: 
                 }
                 (RawKind::Prop(rp), "ADBE Mask Feather") => {
                     if let Some(t) = mg.get_mut("feather") {
-                        apply(t, rp, MASK_FEATHER_SCALE, &vec2);
-                        let feathered = |v: &Value| matches!(v, Value::Vec2(f) if f[0] != 0.0 || f[1] != 0.0);
-                        if feathered(&t.value) || t.keys.iter().any(|k| feathered(&k.value)) {
-                            cx.warn.add(format!(
-                                "mask feather scaled to {:.0}% of its number: EffectCraft's feather falls off wider than After Effects' for the same number",
-                                MASK_FEATHER_SCALE * 100.0
-                            ));
-                        }
+                        // Taken as its number: the renderer's feather falloff is fitted to
+                        // After Effects' (render `masks.rs`), so no correction is needed here.
+                        apply(t, rp, 1.0, &vec2);
                     }
                 }
                 (RawKind::Prop(rp), "ADBE Mask Opacity") => {
@@ -683,6 +669,7 @@ fn spotlight_points(l: &mut Layer, half: [f64; 2]) -> Option<bool> {
     found
 }
 
+#[allow(clippy::cognitive_complexity)] // one pass over the AE layer tree, kept as written on main
 fn build_layers(cx: &mut Ctx, project: &mut Project, comp: &mut Comp, raw: &RawComp, comp_id: ItemId) {
     let mut by_id: BTreeMap<u32, LayerId> = BTreeMap::new();
     // (our layer, After Effects parent id, matte mode, the layer above).
