@@ -58,7 +58,7 @@ fn still(p: &mut fp::Project, path: &str) -> fp::ItemId {
             bitrate: None,
             hdr: None,
         }),
-        audio_streams: vec![],
+        audio_streams: Vec::new(),
         container: String::new(),
         start_timecode: None,
         file_size: None,

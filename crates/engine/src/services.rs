@@ -1,0 +1,152 @@
+use super::config;
+
+/// Host services (file access) injected by the frontend.
+pub trait Services: Send + Sync {
+    fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>>;
+    fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()>;
+    /// Convert an After Effects project to the versioned AEP import document.
+    /// Browser hosts and hosts without the optional importer can return Unsupported.
+    fn export_aep_ir(&self, _path: &str) -> std::io::Result<Vec<u8>> {
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "AEP importer is not configured on this host"))
+    }
+    /// Whether a file exists (the background footage check after open).
+    fn exists(&self, path: &str) -> bool {
+        std::path::Path::new(path).exists()
+    }
+    /// A file's size and modification time (nanoseconds since 1970), to notice that it changed
+    /// on disk (Settings ▸ Import ▸ Reload Footage Changed on Disk); `None` when it can't be read.
+    fn stamp(&self, path: &str) -> Option<(u64, u128)> {
+        let meta = std::fs::metadata(path).ok()?;
+        let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+        Some((meta.len(), modified.as_nanos()))
+    }
+    /// Keep a file the app made for itself (footage extracted from a template): like
+    /// [`Services::write_file`], creating its folder, but never offered as a download (web: it
+    /// goes to browser storage only).
+    fn store_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+        if let Some(d) = std::path::Path::new(path).parent().filter(|d| !d.as_os_str().is_empty()) {
+            let _ = std::fs::create_dir_all(d);
+        }
+        self.write_file(path, data)
+    }
+    /// The files in folder `dir` (full paths; no folders, no hidden files), for image-sequence
+    /// detection on import. Empty when it can't be read.
+    fn list_dir(&self, dir: &str) -> Vec<String> {
+        let Ok(rd) = std::fs::read_dir(if dir.is_empty() { "." } else { dir }) else { return vec![] };
+        rd.filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()) && !e.file_name().to_string_lossy().starts_with('.'))
+            .map(|e| e.path().to_string_lossy().to_string())
+            .collect()
+    }
+    /// Whether `path` is a folder (dropped or picked folders import their files).
+    fn is_dir(&self, path: &str) -> bool {
+        std::path::Path::new(path).is_dir()
+    }
+    /// `path` as a list of recent files keeps it (File ▸ Scripts ▸ Recent Script Files): a
+    /// relative path is made absolute against the working directory, so it opens the same file
+    /// after the working directory changes. `None` when the path can't be made absolute (the
+    /// working directory can't be read); the script is then not added to the list.
+    fn full_path(&self, path: &str) -> Option<String> {
+        std::path::absolute(path).ok().map(|p| p.to_string_lossy().into_owned())
+    }
+    /// Ours: up to `len` bytes of a file from `offset` (fewer at its end), for footage
+    /// fingerprints ([`media_anchor`]). Hosts should override this: the default reads it whole.
+    fn read_range(&self, path: &str, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+        let b = self.read_file(path)?;
+        let a = (offset as usize).min(b.len());
+        Ok(b[a..(a + len).min(b.len())].to_vec())
+    }
+}
+
+/// Native filesystem.
+pub struct FsServices;
+
+impl Services for FsServices {
+    /// Refuses what isn't a regular file: a project can name `/dev/zero` or a FIFO, and reading
+    /// those never ends (#2134).
+    fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+        use std::io::Read;
+        let mut file = std::fs::File::open(path)?;
+        let meta = file.metadata()?;
+        if !meta.is_file() {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{path} is not a file")));
+        }
+        let mut bytes = Vec::new();
+        // A sparse file can claim far more than memory: an error, not an abort.
+        bytes.try_reserve_exact(usize::try_from(meta.len()).unwrap_or(usize::MAX)).map_err(|e| std::io::Error::new(std::io::ErrorKind::OutOfMemory, e))?;
+        file.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+    fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+        config::atomic_write(std::path::Path::new(path), data)
+    }
+    fn read_range(&self, path: &str, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+        use std::io::{Read, Seek};
+        let mut f = std::fs::File::open(path)?;
+        f.seek(std::io::SeekFrom::Start(offset))?;
+        let mut out = Vec::with_capacity(len);
+        f.take(len as u64).read_to_end(&mut out)?;
+        Ok(out)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn export_aep_ir(&self, path: &str) -> std::io::Result<Vec<u8>> {
+        let script = std::env::var_os("EFFECTCRAFT_AEP_EXPORTER")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                let exe = std::env::current_exe().ok()?;
+                let mac_resource = exe.parent()?.join("../Resources/aep_ir_export.py");
+                if mac_resource.is_file() {
+                    return Some(mac_resource);
+                }
+                exe.ancestors().map(|dir| dir.join("packaging/aep/aep_ir_export.py")).find(|candidate| candidate.is_file())
+            })
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "AEP exporter script missing; set EFFECTCRAFT_AEP_EXPORTER"))?;
+        let python = std::env::var_os("EFFECTCRAFT_AEP_PYTHON").unwrap_or_else(|| "python3".into());
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+        let output = std::env::temp_dir().join(format!("effectcraft-aep-{}-{stamp}.json", std::process::id()));
+        let run = std::process::Command::new(python).arg(script).arg(path).arg("-o").arg(&output).output()?;
+        if !run.status.success() {
+            let _ = std::fs::remove_file(&output);
+            let error = String::from_utf8_lossy(&run.stderr);
+            return Err(std::io::Error::other(format!(
+                "AEP export failed (set EFFECTCRAFT_AEP_PYTHON to an interpreter with py-aep installed): {}",
+                error.trim()
+            )));
+        }
+        let bytes = std::fs::read(&output);
+        let _ = std::fs::remove_file(&output);
+        bytes
+    }
+}
+
+/// Imports media files into the project (implemented by the media layer).
+pub trait Importer: Send + Sync {
+    /// Probe one file and return footage metadata. Image sequences are the engine's
+    /// ([`sequence`]): it groups numbered stills and probes their first file here.
+    fn probe(&self, path: &str) -> std::result::Result<effectcraft_project::Footage, String>;
+    /// A footage file's bytes are now at `path` (extracted from a template): hosts whose media
+    /// layer reads from memory (the browser) register them; file-based ones need nothing.
+    fn register(&self, _path: &str, _data: &[u8]) {}
+    /// An image sequence's other frames (its first was probed) are footage now: hosts whose
+    /// media layer reads from memory (the browser) register them; file-based ones need nothing.
+    fn add_frames(&self, _paths: &[String]) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FsServices, Services};
+
+    /// #2134: a project can name a folder, `/dev/zero` or a FIFO; reading those is an error.
+    #[test]
+    fn fs_services_read_only_regular_files() {
+        let dir = std::env::temp_dir();
+        assert!(FsServices.read_file(&dir.to_string_lossy()).is_err());
+        #[cfg(unix)]
+        assert!(FsServices.read_file("/dev/zero").is_err());
+        let f = dir.join(format!("ec-services-read-{}.txt", std::process::id()));
+        std::fs::write(&f, b"data").unwrap();
+        assert_eq!(FsServices.read_file(&f.to_string_lossy()).unwrap(), b"data");
+        let _ = std::fs::remove_file(f);
+    }
+}

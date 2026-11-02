@@ -123,7 +123,7 @@ fn stroke(ir: &Json, size: [f64; 2], fps: f64, losses: &mut Vec<String>, context
             losses.push(format!("{context}: Roto stroke {name} unsupported {field}"));
         }
     }
-    Some(Stroke { kind, frame, radius, points })
+    Some(Stroke { kind, frame, radius, points, object: 0 })
 }
 
 pub(super) fn import(
