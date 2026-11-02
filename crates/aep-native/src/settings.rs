@@ -111,6 +111,7 @@ fn popup_map(theirs: &str, ours: &[String]) -> Vec<Option<u32>> {
 }
 
 fn conv_for(def: &RawParamDef, ps: &ParamSpec, size: [f64; 2]) -> Option<Conv> {
+    #[allow(clippy::wildcard_imports)]
     use param_kind::*;
     match (def.kind, &ps.default, &ps.ui) {
         (INT_SLIDER | FIXED_SLIDER | FLOAT_SLIDER | ANGLE, Value::Scalar(_), ui) => {
@@ -217,6 +218,7 @@ fn put(prop: &mut Property, raw: &RawProp, conv: &Conv) -> bool {
 /// `params` are the parameters this instance stores, `defs` the project's description of the
 /// effect's parameters (empty when the project holds none), `size` the layer's size in pixels.
 pub(crate) fn apply(spec: &EffectSpec, fg: &mut PropGroup, effect: &str, params: &[RawNode], defs: &[RawParamDef], size: (u32, u32)) -> Outcome {
+    #[allow(clippy::wildcard_imports)]
     use param_kind::*;
     let mut out = Outcome::default();
     let size = [size.0 as f64, size.1 as f64];
@@ -435,6 +437,7 @@ fn key_at_crossing(prop: &mut Property, at: f64) {
 /// it would be 182), so After Effects darkens outside the light and does not brighten inside
 /// it. Ours multiplies, so the number is held at 100% with a note.
 fn spotlight(fg: &mut PropGroup, params: &[RawNode], defs: &[RawParamDef], out: &mut Outcome) {
+    #[allow(clippy::wildcard_imports)]
     use param_kind::*;
     let cone = defs.iter().find(|d| matches!(d.kind, INT_SLIDER | FIXED_SLIDER | FLOAT_SLIDER) && norm(&d.name) == "cone angle");
     if let (Some(def), Some(prop)) = (cone, fg.prop_mut("coneAngle")) {

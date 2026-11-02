@@ -683,6 +683,7 @@ fn spotlight_points(l: &mut Layer, half: [f64; 2]) -> Option<bool> {
     found
 }
 
+#[allow(clippy::cognitive_complexity)] // one pass over the AE layer tree, kept as written on main
 fn build_layers(cx: &mut Ctx, project: &mut Project, comp: &mut Comp, raw: &RawComp, comp_id: ItemId) {
     let mut by_id: BTreeMap<u32, LayerId> = BTreeMap::new();
     // (our layer, After Effects parent id, matte mode, the layer above).

@@ -9,6 +9,8 @@ struct State {
     numeric: Option<(Id, u64)>,
     offset: Vec2,
     pending: Option<(Pos2, Pos2)>,
+    // Read only on the scrub paths that some targets compile out; `-D warnings` flags it there.
+    #[allow(dead_code)]
     disabled: bool,
 }
 
