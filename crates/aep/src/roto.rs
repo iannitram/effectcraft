@@ -1,6 +1,6 @@
 //! AE Samurai Roto Brush strokes into editable native RotoData.
 
-use super::*;
+use super::{EffectSource, Json, Project, PropGroup, PropScope, Value, array, boolean, import_native_effect_params, number, string};
 use effectcraft_effects::roto::{self, Stroke, StrokeKind};
 
 fn child<'a>(group: &'a Json, match_name: &str) -> Option<&'a Json> {
@@ -126,23 +126,15 @@ fn stroke(ir: &Json, size: [f64; 2], fps: f64, losses: &mut Vec<String>, context
     Some(Stroke { kind, frame, radius, points, object: 0 })
 }
 
-pub(super) fn import(
-    project: &mut Project,
-    fx: &mut PropGroup,
-    ir: &Json,
-    size: [f64; 2],
-    fps: f64,
-    layer_time: LayerTime,
-    losses: &mut Vec<String>,
-    context: &str,
-) {
+pub(super) fn import(project: &mut Project, fx: &mut PropGroup, ir: &Json, scope: PropScope, losses: &mut Vec<String>, context: &str) {
+    let PropScope { size, fps, layer_time, .. } = scope;
     let mut plain = serde_json::Map::new();
     plain.insert(
         "children".into(),
         Json::Array(array(ir, "children").iter().filter(|c| string(c, &["match_name"]) != Some("ADBE Samurai Strokes Group")).cloned().collect()),
     );
     let plain = Json::Object(plain);
-    import_native_effect_params(project, fx, &plain, &plain, roto::ID, layer_time, losses, context, 0);
+    import_native_effect_params(project, fx, &plain, EffectSource { ir: &plain, id: roto::ID, layer_time }, losses, context, 0);
     let Some(group) = child(ir, "ADBE Samurai Strokes Group") else { return };
     let mut strokes = Vec::new();
     let mut base = None;
@@ -177,6 +169,7 @@ pub(super) fn import(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{LayerTime, Tick, build, tick};
 
     #[test]
     fn imports_layer_space_roto_strokes() {
@@ -201,7 +194,8 @@ mod tests {
         let mut fx =
             effectcraft_effects::instantiate(effectcraft_effects::find(roto::ID).unwrap(), &mut build::Ids(&mut project.next_id), "Roto", [1000.0, 500.0]);
         let mut losses = vec![];
-        import(&mut project, &mut fx, &ir, [1000.0, 500.0], 25.0, LayerTime { start: tick(0.0), stretch: 100.0 }, &mut losses, "test");
+        let scope = PropScope { size: [1000.0, 500.0], fps: 25.0, poi_anchor: false, layer_time: LayerTime { start: tick(0.0), stretch: 100.0 } };
+        import(&mut project, &mut fx, &ir, scope, &mut losses, "test");
         let data: Json = serde_json::from_str(match &fx.get(roto::STROKES).unwrap().value {
             Value::Str(s) => s,
             _ => "",
@@ -246,9 +240,7 @@ mod tests {
             &mut project,
             &mut fx,
             &serde_json::json!({"children":children}),
-            [100.0, 100.0],
-            25.0,
-            LayerTime { start: Tick::ZERO, stretch: 100.0 },
+            PropScope { size: [100.0, 100.0], fps: 25.0, poi_anchor: false, layer_time: LayerTime { start: Tick::ZERO, stretch: 100.0 } },
             &mut losses,
             "test",
         );
@@ -290,9 +282,7 @@ mod tests {
             &mut project,
             &mut fx,
             &serde_json::json!({"children":children}),
-            [100.0, 100.0],
-            25.0,
-            LayerTime { start: Tick::ZERO, stretch: 100.0 },
+            PropScope { size: [100.0, 100.0], fps: 25.0, poi_anchor: false, layer_time: LayerTime { start: Tick::ZERO, stretch: 100.0 } },
             &mut losses,
             "test",
         );

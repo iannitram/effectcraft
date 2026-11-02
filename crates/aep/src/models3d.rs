@@ -1,6 +1,6 @@
 //! AE 3D model layers remain editable model references, including offline footage.
 
-use super::*;
+use super::{BTreeMap, Fill, ItemId, ItemKind, Json, LayerSource, LayerTime, Project, Value, array, convert_value, fill_property, integer, remap_json, string};
 use effectcraft_project::Layer;
 
 pub(super) fn layer_source(ir: &Json, project: &Project, item_ids: &BTreeMap<i64, ItemId>, comp_id: i64, losses: &mut Vec<String>) -> Option<LayerSource> {
@@ -58,7 +58,7 @@ pub(super) fn import(_project: &mut Project, layer: &mut Layer, ir: &Json, model
         let raw = remap_json(source.get("value").unwrap_or(&Json::Null), remap);
         let value_type = string(source, &["value_type"]).unwrap_or("");
         if let Some(value) = convert_value(&raw, value_type) {
-            fill_property_mapped(prop, source, value, value_type, 1.0, remap, layer_time, losses, context);
+            fill_property(prop, source, value, Fill { remap, ..Fill::plain(value_type) }, layer_time, losses, context);
         }
     }
 }

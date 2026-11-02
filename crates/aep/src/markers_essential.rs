@@ -8,7 +8,7 @@ use effectcraft_project::{
 };
 use serde_json::Value as Json;
 
-use super::{IMPLICIT_CAMERA_COMMENT, LayerTime, array, boolean, convert_value, fill_property, integer, native_match, number, string, tick};
+use super::{Fill, IMPLICIT_CAMERA_COMMENT, LayerTime, array, boolean, convert_value, fill_property, integer, native_match, number, string, tick};
 
 pub(super) fn markers(out: &mut Vec<Marker>, ir: &Json, fps: f64, layer_time: LayerTime, losses: &mut Vec<String>, context: &str) {
     let keys = array(ir, "keyframes");
@@ -101,7 +101,7 @@ pub(super) fn overrides(project: &mut Project, layer: &mut Layer, ir: &Json, los
         if matches!(value, Value::Text(_) | Value::Str(_)) {
             prop.ui = ParamUi::Text;
         }
-        fill_property(&mut prop, child, value, value_type, 1.0, layer_time, losses, context);
+        fill_property(&mut prop, child, value, Fill::plain(value_type), layer_time, losses, context);
         if boolean(child, &["enabled"]) == Some(false) {
             losses.push(format!("{context}: disabled state of Essential Property {name} is not represented"));
         }
