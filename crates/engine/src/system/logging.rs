@@ -74,9 +74,11 @@ impl log::Log for Logger {
         }
         if ENABLED.load(Ordering::Relaxed)
             && let Some(f) = &st.file
-            && let Ok(mut out) = std::fs::OpenOptions::new().create(true).append(true).open(f)
         {
-            let _ = writeln!(out, "{line}");
+            rotate_if_full(f, MAX_FILE_BYTES);
+            if let Ok(mut out) = std::fs::OpenOptions::new().create(true).append(true).open(f) {
+                let _ = writeln!(out, "{line}");
+            }
         }
     }
     fn flush(&self) {}
@@ -304,6 +306,24 @@ impl Sink {
     }
 }
 
+/// If `path` is at least `max` bytes, move it to `<stem>.old.<ext>` next to it (replacing a
+/// previous one), so Enable Logging's file stays under the cap. Returns true when it rotated; a
+/// missing file or any error is not a rotation (false).
+fn rotate_if_full(path: &Path, max: u64) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else { return false };
+    if meta.len() < max {
+        return false;
+    }
+    let (Some(dir), Some(stem)) = (path.parent(), path.file_stem()) else { return false };
+    let mut name = stem.to_os_string();
+    name.push(".old");
+    if let Some(ext) = path.extension() {
+        name.push(".");
+        name.push(ext);
+    }
+    std::fs::rename(path, dir.join(name)).is_ok()
+}
+
 /// Turn file logging on (writing to `file`) or off.
 pub fn set_enabled(on: bool, file: PathBuf) -> std::io::Result<()> {
     install();
@@ -311,6 +331,7 @@ pub fn set_enabled(on: bool, file: PathBuf) -> std::io::Result<()> {
         if let Some(d) = file.parent() {
             std::fs::create_dir_all(d)?;
         }
+        rotate_if_full(&file, MAX_FILE_BYTES);
         let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&file)?;
         writeln!(f, "{} INFO  effectcraft: logging enabled ({} {})", timestamp(unix_millis()), std::env::consts::OS, env!("CARGO_PKG_VERSION"))?;
     }
@@ -480,3 +501,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "logging_rotate_tests.rs"]
+mod rotate_tests;
