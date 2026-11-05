@@ -1,6 +1,6 @@
 [package]
 name = "effectcraft-aep"
-description = "After Effects exported project IR import into editable EffectCraft projects"
+description = "After Effects projects: the .aep (RIFX 'Egg!') / .aepx container as a lossless chunk tree with a typed view, and its import into an EffectCraft project, which reports everything it does not carry over"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,16 +10,18 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-effectcraft-project = { workspace = true }
-effectcraft-keyframe = { workspace = true }
 effectcraft-time = { workspace = true }
 effectcraft-color = { workspace = true }
+effectcraft-keyframe = { workspace = true }
+effectcraft-project = { workspace = true }
 effectcraft-effects = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true, features = ["raw_value"] }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-effectcraft-render = { workspace = true }
-effectcraft-segment = { workspace = true }
-image = { workspace = true }
+serde_json = { workspace = true }
+
+# The tool's own tests run with the crate's (examples are only built by default).
+[[example]]
+name = "stubicc"
+test = true

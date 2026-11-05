@@ -576,8 +576,8 @@ pub(super) fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) ->
         "camera.exportBlender" => ("path", Ask::Save("Tracked Scene.py".into())),
         "file.exportLottie" => ("path", Ask::Save("Animation.json".into())),
         "file.importLottie" => ("path", Ask::Open(&["json", "lottie"])),
+        "file.importAep" => ("path", Ask::Open(&["aep", "aepx"])),
         "file.importProject" => ("path", Ask::Open(&["ecproj", "ecprojx"])),
-        "file.importAep" => ("path", Ask::Open(&["aep"])),
         "file.importTimeline" => ("path", Ask::Open(&["xml", "fcpxml", "otio", "edl", "aaf", "omf"])),
         "render.saveCurrentPreview" => ("path", Ask::Save("Preview.mp4".into())),
         "file.runScript" if params.get("name").is_none() && params.get("recent").is_none() => ("path", Ask::Open(&["jsx", "js", "jsonl", "json", "txt"])),
@@ -699,6 +699,15 @@ fn run_with_picked(app: &mut EffectcraftApp, id: &str, key: &str, params: &Value
         || matches!(id, "file.import" | "file.importMultiple") && crate::panels::forms::open_import_sequence(app, &picked)
     {
         return Ok(json!({"dialog": id}));
+    }
+    // An After Effects import that loses something asks first (`panels::aep_losses`).
+    match crate::panels::aep_losses::guard(app, id, &picked) {
+        Ok(true) => return Ok(json!({"dialog": id})),
+        Ok(false) => {}
+        Err(e) => {
+            app.ui.status = e.clone();
+            return Err(e);
+        }
     }
     // Save (untitled) becomes Save As.
     let id = if id == "file.save" { "file.saveAs" } else { id };

@@ -26,9 +26,9 @@ effectcraft-track = { workspace = true }
 effectcraft-model = { workspace = true }
 effectcraft-lottie = { workspace = true }
 effectcraft-aep-native = { workspace = true }
-effectcraft-aep = { workspace = true }
 effectcraft-interchange = { workspace = true }
 effectcraft-psd = { workspace = true }
+effectcraft-aep = { workspace = true }
 kurbo = { workspace = true }
 effectcraft-svg = { workspace = true }
 effectcraft-pdf = { workspace = true }
