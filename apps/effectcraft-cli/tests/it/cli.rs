@@ -285,7 +285,9 @@ fn a_missing_project_gets_no_lock_file_and_keeps_its_error() {
         let out = bin().args(args).output().unwrap();
         assert_eq!(out.status.code(), Some(1), "{args:?}");
         let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-        stderr.split_once(": ").map(|(_, e)| e.to_string()).unwrap_or(stderr)
+        // only the message line: the fork's self-logging adds a timestamped log echo and a path after it
+        let message = stderr.lines().next().unwrap_or_default();
+        message.split_once(": ").map(|(_, e)| e.to_string()).unwrap_or_else(|| message.to_string())
     };
     let plain = error(&["info", "--project", &gone]);
     assert!(plain.contains("gone.ecproj"), "{plain}");
