@@ -480,3 +480,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "logging_rotate_tests.rs"]
+mod rotate_tests;
