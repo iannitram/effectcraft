@@ -4,7 +4,7 @@ members = ["crates/*", "apps/*", "xtask"]
 default-members = ["crates/*", "apps/*"]
 
 [workspace.package]
-version = "0.20.0"
+version = "0.21.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
@@ -38,10 +38,10 @@ effectcraft-export = { path = "crates/export" }
 effectcraft-expr = { path = "crates/expr" }
 effectcraft-lottie = { path = "crates/lottie" }
 effectcraft-aep-native = { path = "crates/aep-native" }
-effectcraft-aep = { path = "crates/aep" }
 effectcraft-interchange = { path = "crates/interchange" }
 effectcraft-pdf = { path = "crates/pdf" }
 effectcraft-psd = { path = "crates/psd" }
+effectcraft-aep = { path = "crates/aep" }
 effectcraft-vp9enc = { path = "crates/vp9enc" }
 effectcraft-svg = { path = "crates/svg" }
 effectcraft-engine = { path = "crates/engine" }

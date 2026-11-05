@@ -1,5 +1,6 @@
 mod add_item_options;
 mod aep;
+mod aep_import;
 mod aep_native;
 mod anim_presets;
 mod anim_tools;

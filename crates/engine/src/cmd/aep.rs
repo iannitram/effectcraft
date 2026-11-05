@@ -1,97 +1,101 @@
-//! Import editable After Effects project data into the current EffectCraft project.
+//! File ▸ Import ▸ After Effects Project… (`effectcraft_aep::import`).
+//!
+//! Adds the items of an `.aep` (or its XML form, `.aepx`) to the project in a folder named after
+//! the file (`docs/aep-import.md` lists what arrives). What the importer cannot bring over (effects
+//! outside its table, undecoded text and style settings, …) is returned in the report; with losses and without
+//! `allowLosses` the import is refused and changes nothing. Fonts that are not installed are listed
+//! in the report's `missingFonts` (not a loss: the text keeps the font name and is drawn with the
+//! fallback font).
 
+use effectcraft_aep::import::{AepImportError, ImportOptions};
+use effectcraft_project::{FootageKind, ItemKind};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, always, b_p, bad, str_p};
 use crate::{EngineError, Result, Session, cmd};
 
-fn import_document(s: &mut Session, path: &str, bytes: &[u8], dir: &str, allow_losses: bool) -> Result<Value> {
+fn import_aep(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = str_p(p, "path").ok_or_else(|| bad("file.importAep", "missing `path`"))?.to_string();
+    let allow_losses = b_p(p, "allowLosses").unwrap_or(false);
+    let dry_run = b_p(p, "dryRun").unwrap_or(false);
+    let bytes = s.services.read_file(&path).map_err(|e| EngineError::Other(format!("cannot read {path}: {e}")))?;
+    // Footage paths stored in the file reach the file system only through the document-path policy
+    // (`doc_path`): relative ones are taken from the file's folder, paths to other computers are
+    // never looked at (the footage arrives missing).
     let services = s.services.clone();
-    let mut resolve_media = |raw: &str| {
-        let path = std::path::Path::new(raw);
-        if services.exists(raw) {
-            Some(raw.to_string())
-        } else if !path.is_absolute() {
-            let relative = std::path::Path::new(dir).join(path).to_string_lossy().to_string();
-            services.exists(&relative).then_some(relative)
-        } else {
-            None
+    let doc = path.clone();
+    let exists = move |f: &str| crate::doc_path::resolve(f, Some(&doc)).ok().and_then(|p| p.to_str().map(|p| services.exists(p))).unwrap_or(false);
+    // The renderer's own font lookup (family, full or PostScript name); a miss falls back.
+    let has_font = |font: &str| !effectcraft_text::resolve(font, "Regular").missing;
+    let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "After Effects Project".into());
+    // Into a project without compositions the file's settings come along (it is opened as a
+    // project); into one with compositions only when asked (`applySettings`). Settings that are not
+    // taken over cannot be lost, so the dry run and the refusal leave them out.
+    let apply = b_p(p, "applySettings").unwrap_or_else(|| s.project.comps().next().is_none());
+    let options = ImportOptions { allow_losses, exists: &exists, has_font: &has_font, folder_name: &name, settings: apply };
+    if dry_run {
+        let report = effectcraft_aep::import::analyze_with(&bytes, &options).map_err(|e| EngineError::Other(format!("cannot import {path}: {e}")))?;
+        return Ok(json!({"dryRun": true, "report": report}));
+    }
+    let importer = s.importer.clone();
+    let res = s.edit("Import After Effects Project", None, |proj, st| {
+        let r = effectcraft_aep::import::import(proj, &bytes, &options).map_err(|e| match e {
+            AepImportError::Refused(_) => {
+                EngineError::Other(format!("{e} (nothing was imported: pass `allowLosses` to import anyway, or `dryRun` for the full report)"))
+            }
+            other => EngineError::Other(format!("cannot import {path}: {other}")),
+        })?;
+        if apply {
+            proj.settings = r.settings.clone();
         }
-    };
-    // The edit works on a copy of the project and drops it on an error: no second copy needed.
-    let imported = s.edit("Import After Effects Project", None, |project, state| {
-        let result = effectcraft_aep::import_ir_into(project, bytes, dir, &mut resolve_media).map_err(|e| EngineError::Other(e.to_string()))?;
-        if !allow_losses && !result.losses.is_empty() {
-            return Err(EngineError::Other(format!("AEP import has {} fidelity gaps; project left unchanged", result.losses.len())));
+        // The new footage keeps the file as its origin: resolved against it, a refused path missing.
+        let created: std::collections::HashSet<_> = r.items.iter().copied().collect();
+        crate::doc_path::resolve_footage_of(proj, |id| created.contains(&id), Some(&path));
+        // A video file that is there says whether it carries sound, and it is right when the
+        // project file's stored sample rate is not (the file changed since, or the project is not
+        // After Effects's own). The path is the one the document-path policy resolved above; a
+        // refused or missing one is not read and keeps what the project file says.
+        if let Some(importer) = &importer {
+            for item in proj.items.values_mut().filter(|i| created.contains(&i.id)) {
+                if let ItemKind::Footage(f) = &mut item.kind
+                    && f.kind == FootageKind::Video
+                    && !f.missing
+                    && let Ok(probed) = importer.probe(&f.path)
+                {
+                    f.has_audio = probed.has_audio;
+                }
+            }
         }
-        state.project_selection = result.comps.clone();
-        Ok(result)
+        st.project_selection = vec![r.folder];
+        Ok(r)
     })?;
-    if let Some(comp) = imported.primary_comp.or_else(|| imported.comps.first().copied()) {
-        s.open_comp(comp);
+    let created: std::collections::HashSet<_> = res.items.iter().copied().collect();
+    s.stored_paths.add_items(&s.project, |id| created.contains(&id), Some(&path));
+    if let Some(first) = res.comps.first() {
+        s.open_comp(*first);
     }
-    if !imported.losses.is_empty() {
-        s.toast(format!("Imported {path} with {} fidelity gaps", imported.losses.len()));
-    }
+    let losses = res.report.total_losses();
+    s.toast(if losses == 0 {
+        format!("Imported {name}")
+    } else {
+        format!("Imported {name} ({losses} unsupported item{} not imported)", if losses == 1 { "" } else { "s" })
+    });
     Ok(json!({
-        "comps": imported.comps.iter().map(|id| id.0).collect::<Vec<_>>(),
-        "primaryComp": imported.primary_comp.map(|id| id.0),
-        "items": imported.items.iter().map(|id| id.0).collect::<Vec<_>>(),
-        "missingMedia": imported.missing_media,
-        "losses": imported.losses,
-        "warnings": imported.warnings,
+        "folder": res.folder.0,
+        "comps": res.comps.iter().map(|c| c.0).collect::<Vec<_>>(),
+        "items": res.items.iter().map(|i| i.0).collect::<Vec<_>>(),
+        "report": res.report,
     }))
 }
 
-fn import_ir(s: &mut Session, p: &Value) -> Result<Value> {
-    let path = str_p(p, "path").ok_or_else(|| bad("file.importAeIr", "missing `path`"))?.to_string();
-    let bytes = s.services.read_file(&path).map_err(|e| EngineError::Other(format!("cannot read {path}: {e}")))?;
-    let dir =
-        str_p(p, "sourceDir").map(str::to_string).or_else(|| std::path::Path::new(&path).parent().map(|p| p.to_string_lossy().to_string())).unwrap_or_default();
-    import_document(s, &path, &bytes, &dir, b_p(p, "allowLosses").unwrap_or(false))
-}
-
-fn import_aep(s: &mut Session, p: &Value) -> Result<Value> {
-    let path = str_p(p, "path").ok_or_else(|| bad("file.importAep", "missing `path`"))?.to_string();
-    if !path.to_ascii_lowercase().ends_with(".aep") {
-        return Err(bad("file.importAep", "expected an After Effects .aep project"));
-    }
-    let dir = std::path::Path::new(&path).parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-    let allow_losses = b_p(p, "allowLosses").unwrap_or(false);
-    // `wait: false`: the export (the After Effects reader, minutes for a big project) runs on a
-    // background thread; the import applies on the session's thread when it is done.
-    if b_p(p, "wait") == Some(false) {
-        let services = s.services.clone();
-        let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone());
-        return s.spawn_task("importAep", format!("Importing {name}"), false, move |_ctl| {
-            let bytes = services.export_aep_ir(&path).map_err(|e| format!("cannot import {path}: {e}"))?;
-            let apply: crate::jobs::Apply = Box::new(move |s: &mut Session| import_document(s, &path, &bytes, &dir, allow_losses));
-            Ok(apply)
-        });
-    }
-    let bytes = s.services.export_aep_ir(&path).map_err(|e| EngineError::Other(format!("cannot import {path}: {e}")))?;
-    import_document(s, &path, &bytes, &dir, allow_losses)
-}
-
 pub fn specs() -> Vec<CommandSpec> {
-    vec![
-        cmd!(
-            "file.importAep",
-            "After Effects Project...",
-            ["File", "Import"],
-            None,
-            "{path (.aep), allowLosses?: bool (inspect incomplete import), wait? (false: export in the background)}",
-            always,
-            import_aep
-        ),
-        cmd!(
-            "file.importAeIr",
-            "After Effects Project Data...",
-            [],
-            None,
-            "{path (.json), sourceDir? (AEP project folder for relative media), allowLosses?: bool}",
-            always,
-            import_ir
-        ),
-    ]
+    vec![cmd!(
+        "file.importAep",
+        "After Effects Project...",
+        ["File", "Import"],
+        None,
+        "{path (.aep or .aepx), allowLosses?: bool (import although parts cannot be imported), dryRun?: bool (only return the report), applySettings?: bool (take over the file's project settings; default: when the project has no compositions)}",
+        always,
+        import_aep
+    )]
 }
