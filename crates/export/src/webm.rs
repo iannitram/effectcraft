@@ -261,7 +261,7 @@ pub(crate) async fn webm(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut Sta
         Ok(())
     };
 
-    let mut batch = crate::in_flight::Batch::new(); // ours
+    let mut batch = crate::in_flight::Batch::for_job(job); // ours
     let mut frames: Vec<Frame> = Vec::new();
     let mut i = 0;
     while i < total {

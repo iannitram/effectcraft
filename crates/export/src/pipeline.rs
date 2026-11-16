@@ -527,6 +527,18 @@ impl<'a> Cx<'a> {
         out
     }
 
+    /// Ours: the fewest frames the job's first batch should hold so [`Cx::probe`] can time both
+    /// compositors (its warm-up frame, [`PROBE_FRAMES`] and [`PROBE_CPU_FRAMES`]); 0 when it will
+    /// not measure. Our memory-sized batches ([`crate::in_flight::Batch`]) could otherwise start
+    /// below that, and a probe with too few frames keeps the project's compositor unmeasured.
+    pub(crate) fn probe_batch(&self) -> u64 {
+        let total = self.comp().map_or(0, |c| self.job.settings.frame_count(c));
+        if self.deferred() || self.choice().is_some() || total < PROBE_MIN_JOB {
+            return 0;
+        }
+        (1 + PROBE_FRAMES + PROBE_CPU_FRAMES) as u64
+    }
+
     /// Choose the job's compositor by timing both on the first frames of `ks` (#3335), as the
     /// viewer's Auto does per comp: frame 0 warms each up (layer cache misses, uploads, kernel
     /// builds) untimed, then the GPU renders the next [`PROBE_FRAMES`] under its in-flight cap

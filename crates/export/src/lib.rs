@@ -322,7 +322,7 @@ async fn sequence(cx: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut State<'_>) 
         Channels::Rgba if !fmt.supports_alpha() => Channels::Rgb,
         c => c,
     };
-    let mut batch = in_flight::Batch::new(); // ours
+    let mut batch = in_flight::Batch::for_job(cx); // ours
     let mut bytes = 0u64;
     let mut i = 0;
     while i < st.total {
@@ -448,7 +448,7 @@ async fn gif_export(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut State<'_
     let cs_per_frame = 100.0 * rate.den as f64 / rate.num as f64;
     let mut clock = 0.0f64;
     let mut emitted = 0u64;
-    let mut batch = in_flight::Batch::new(); // ours
+    let mut batch = in_flight::Batch::for_job(job); // ours
     let mut i = 0;
     while i < st.total {
         let end = (i + batch.next()).min(st.total);

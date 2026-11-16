@@ -136,7 +136,7 @@ pub(crate) async fn webm_av1(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut
         Ok(())
     };
 
-    let mut batch = crate::in_flight::Batch::new(); // ours
+    let mut batch = crate::in_flight::Batch::for_job(job); // ours
     let mut i = 0;
     let flush_blocks = |blocks: &mut Vec<Block>, file: &mut crate::out::Out, seg_len: &mut u64| -> Result<()> {
         if !blocks.is_empty() {

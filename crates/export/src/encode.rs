@@ -351,7 +351,7 @@ pub(crate) async fn movie(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut St
         _ => Box::new(ProRes::new(w, h, job.output.prores_profile, if channels == Channels::Alpha { Channels::Rgb } else { channels }, prores_colr(codes))),
     };
     let brand = if matches!(fmt, OutputFormat::ProRes | OutputFormat::Uncompressed) { Brand::Mov } else { Brand::Mp4 };
-    let mut batch = crate::in_flight::Batch::new(); // ours
+    let mut batch = crate::in_flight::Batch::for_job(job); // ours
     let yuv = venc.takes_yuv420();
     let render = |_: u64, img: effectcraft_raster::Image| -> Pixels {
         let px = job.pixels(&img, comp, channels, w, h);

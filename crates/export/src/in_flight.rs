@@ -60,6 +60,9 @@ pub(crate) struct Batch<P: Probe = System> {
     /// The highest peak seen so far: where the peak cannot be reset, only a batch that raised it
     /// says what a frame costs.
     peak_seen: u64,
+    /// The fewest frames the first batch holds (up to the ceiling): what the job's compositor
+    /// measurement (#3335) needs to time both compositors, 0 when it will not measure.
+    first_floor: u64,
 }
 
 impl Batch<System> {
@@ -67,11 +70,19 @@ impl Batch<System> {
     pub(crate) fn new() -> Self {
         Self::with_probe(crate::batch_size(), System)
     }
+
+    /// [`Batch::new`] for the job `cx`: its first batch holds at least the frames
+    /// [`crate::Cx::probe_batch`] asks for, so upstream's measurement of the faster compositor
+    /// (#3335) has frames to time. Its frames in flight stay under the job's own caps (#879,
+    /// #1615) whatever the batch size; every later batch follows the free memory as before.
+    pub(crate) fn for_job(cx: &crate::Cx<'_>) -> Self {
+        Self { first_floor: cx.probe_batch(), ..Self::new() }
+    }
 }
 
 impl<P: Probe> Batch<P> {
     pub(crate) fn with_probe(ceiling: u64, probe: P) -> Self {
-        Self { ceiling: ceiling.max(1), probe, last: None, per_frame: None, peak_seen: 0 }
+        Self { ceiling: ceiling.max(1), probe, last: None, per_frame: None, peak_seen: 0, first_floor: 0 }
     }
 
     /// The size of the next batch; call it once before each batch is rendered.
@@ -84,7 +95,10 @@ impl<P: Probe> Batch<P> {
             self.per_frame = Some(self.per_frame.map_or(cost, |c| c.max(cost)));
         }
         self.peak_seen = self.peak_seen.max(m.peak);
-        let size = fit(&m, self.per_frame.map_or(FIRST_GUESS, |c| c / 4 * MARGIN_QUARTERS), self.ceiling);
+        let mut size = fit(&m, self.per_frame.map_or(FIRST_GUESS, |c| c / 4 * MARGIN_QUARTERS), self.ceiling);
+        if self.last.is_none() {
+            size = size.max(self.first_floor.min(self.ceiling));
+        }
         if self.last.is_none_or(|(n, _)| n != size) && size < self.ceiling {
             log::info!(
                 "decision: export: {size} frames at once, not {}: {} MB free, about {} MB per frame in flight{}",
@@ -191,6 +205,14 @@ mod tests {
         // 14 GB free: (14 − 4.6) / 2 → 4 frames, not 16, before anything is measured
         let mut b = Batch::with_probe(16, Script(vec![mem(14, 1, 1)], 0));
         assert_eq!(b.next(), 4);
+    }
+
+    #[test]
+    fn the_first_batch_holds_what_the_compositor_measurement_needs() {
+        // 7 GB free would make a first batch of 1, too few for #3335 to time both compositors
+        let mut b = Batch { first_floor: 11, ..Batch::with_probe(8, Script(vec![mem(7, 1, 1), mem(7, 1, 9)], 0)) };
+        assert_eq!(b.next(), 8, "the floor, up to the ceiling");
+        assert_eq!(b.next(), 1, "later batches follow the free memory");
     }
 
     #[test]
