@@ -826,6 +826,7 @@ fn extruded_text_renders_as_a_mesh() {
         footage: None,
         property_overrides: &[],
         media_overrides: &[],
+        reads: None,
     };
     let l = &ctx.comp.layers[0];
     let params = scene::extrusion_params(&ctx, l).unwrap();
@@ -874,6 +875,7 @@ fn shape_surface_items_colour_the_extruded_surfaces() {
         footage: None,
         property_overrides: &[],
         media_overrides: &[],
+        reads: None,
     };
     let l = &ctx.comp.layers[0];
     let params = scene::extrusion_params(&ctx, l).unwrap();
@@ -919,6 +921,7 @@ fn text_animators_colour_the_extruded_surfaces() {
         footage: None,
         property_overrides: &[],
         media_overrides: &[],
+        reads: None,
     };
     let l = &ctx.comp.layers[0];
     let params = scene::extrusion_params(&ctx, l).unwrap();
@@ -1126,6 +1129,7 @@ fn extruded_strokes_render_as_bevelled_meshes() {
         footage: None,
         property_overrides: &[],
         media_overrides: &[],
+        reads: None,
     };
     let l = &ctx.comp.layers[0];
     let params = scene::extrusion_params(&ctx, l).unwrap();

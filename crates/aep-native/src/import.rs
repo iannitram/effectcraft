@@ -573,7 +573,9 @@ fn effects(cx: &mut Ctx, ids: &mut Ids, raw: &[RawNode], g: &mut PropGroup, size
         let spec = effects_table::effect_id(&n.match_name)
             .or(stand_in.map(|s| s.0))
             .and_then(effectcraft_effects::find)
-            .or_else(|| effectcraft_effects::all().into_iter().find(|s| !display.is_empty() && s.name.eq_ignore_ascii_case(display)));
+            // By name: today's, an alias or an earlier version's (upstream renamed the CC effects,
+            // e.g. CC Spotlight is now Surface Spotlight).
+            .or_else(|| (!display.is_empty()).then(|| effectcraft_effects::lookup(display)).flatten());
         let Some(spec) = spec else {
             cx.warn.add(format!("effect {shown} ({}) has no EffectCraft equivalent: skipped", n.match_name));
             continue;

@@ -86,7 +86,7 @@ impl<'a> Reader<'a> {
 
 /// Mac OS Roman upper half (0x80..=0xFF), as published by the Unicode Consortium mapping table.
 /// Byte 0xCA was corrected to U+00A0 (no-break space) from U+0020 (space).
-fn mac_roman(b: u8) -> char {
+pub(crate) fn mac_roman(b: u8) -> char {
     const MAC_ROMAN: [char; 128] = [
         '\u{00C4}', '\u{00C5}', '\u{00C7}', '\u{00C9}', '\u{00D1}', '\u{00D6}', '\u{00DC}', '\u{00E1}', '\u{00E0}', '\u{00E2}', '\u{00E4}', '\u{00E3}',
         '\u{00E5}', '\u{00E7}', '\u{00E9}', '\u{00E8}', '\u{00EA}', '\u{00EB}', '\u{00ED}', '\u{00EC}', '\u{00EE}', '\u{00EF}', '\u{00F1}', '\u{00F3}',

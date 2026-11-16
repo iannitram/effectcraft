@@ -46,7 +46,7 @@ pub(crate) async fn webm_av1(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut
     let mut venc = crate::hevc_av1::Av1::new(w, h, rate, job.output, codes)?;
     let with_audio = wants_audio(job);
     let opus_channels = if job.output.audio_channels == 1 { 1usize } else { 2 };
-    let mut opus = with_audio.then(|| opus_encoder(job));
+    let mut opus = with_audio.then(|| opus_encoder(job)).transpose()?;
     let total = st.total;
     let frame_ms = |k: u64| -> i64 { ((k as i128 * 1000 * rate.den as i128 + rate.num as i128 / 2) / rate.num as i128) as i64 };
     let duration_ms = frame_ms(total) as f64;
@@ -111,8 +111,8 @@ pub(crate) async fn webm_av1(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut
     let mut cursor = span_start.to_units_floor(OPUS_RATE as i64);
     let mut pcm_left: Vec<f32> = vec![];
     let mut packets = 0u64;
-    let mut audio_until = |until: Tick, blocks: &mut Vec<Block>, finish: bool| {
-        let Some(enc) = opus.as_mut() else { return };
+    let mut audio_until = |until: Tick, blocks: &mut Vec<Block>, finish: bool| -> Result<()> {
+        let Some(enc) = opus.as_mut() else { return Ok(()) };
         let end = until.to_units_floor(OPUS_RATE as i64);
         if end > cursor {
             let n = (end - cursor) as usize;
@@ -120,17 +120,20 @@ pub(crate) async fn webm_av1(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut
             pcm_left.extend(mix(job, start, n, OPUS_RATE));
             cursor = end;
         }
-        let fs = effectcraft_opusenc::OpusEncoder::FRAME_SIZE * opus_channels;
+        let fs = craft_audio::opus::Encoder::FRAME_SIZE * opus_channels;
         if finish && !pcm_left.is_empty() {
             let pad = (fs - pcm_left.len() % fs) % fs + fs;
             pcm_left.extend(std::iter::repeat_n(0.0, pad));
         }
-        while pcm_left.len() >= fs {
-            let pkt = enc.encode_float(&pcm_left[..fs]);
-            pcm_left.drain(..fs);
+        // Packets are read in place and the encoded samples dropped once: draining each packet
+        // from the front would shift the rest of the batch's audio every 20 ms.
+        for packet in pcm_left.chunks_exact(fs) {
+            let pkt = enc.encode_float(packet).map_err(crate::webm::opus_error)?;
             blocks.push(Block { ms: packets as i64 * 20, track: 2, key: true, data: pkt });
             packets += 1;
         }
+        pcm_left.drain(..pcm_left.len() / fs * fs);
+        Ok(())
     };
 
     let mut batch = crate::in_flight::Batch::new(); // ours
@@ -158,7 +161,7 @@ pub(crate) async fn webm_av1(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut
             // Ours: a Cluster (with its audio) every AUDIO_BLOCK_FRAMES frames, not per batch.
             if (k + 1).is_multiple_of(crate::AUDIO_BLOCK_FRAMES) || k + 1 == total {
                 let t_end = if k + 1 >= total { span_end } else { job.settings.frame_time(comp, k + 1) };
-                audio_until(t_end, &mut blocks, k + 1 >= total);
+                audio_until(t_end, &mut blocks, k + 1 >= total)?;
                 flush_blocks(&mut blocks, &mut file, &mut seg_len)?;
             }
         }
@@ -166,7 +169,7 @@ pub(crate) async fn webm_av1(job: &Cx<'_>, comp: &Comp, w: u32, h: u32, st: &mut
         i = end;
     }
     if total == 0 {
-        audio_until(span_end, &mut blocks, true);
+        audio_until(span_end, &mut blocks, true)?;
         flush_blocks(&mut blocks, &mut file, &mut seg_len)?;
     }
     let mut size = [0u8; 8];
